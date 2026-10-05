@@ -1,3 +1,4 @@
+import {testPdf} from './helpers/documents.js';
 import {selection} from './helpers/selection.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +9,7 @@ import {readAttachment} from '../extension/page-reader.js';
 
 test('PDF stream reaches multipart upload and the document model with TA and the saved comment analysis',async()=>{
   const originalJSON=geminiService.generateJSON,originalFiles=geminiService.generateContentWithFiles;
-  const pdf=Buffer.concat([Buffer.from('%PDF-1.4\n'),Buffer.alloc(70000,65)]);
+  const pdf=await testPdf();
   let documentCalls=0;
   geminiService.generateJSON=async(_system,_user,stage)=>stage==='documents'
     ? {decision:'ACCEPTED',reason:'Synthetic evidence supports the claim.'}
@@ -19,7 +20,7 @@ test('PDF stream reaches multipart upload and the document model with TA and the
     assert.equal(pdfPart.mimeType,'application/pdf');
     assert.deepEqual(Buffer.from(pdfPart.data,'base64'),pdf);
     assert.ok(parts.some(part=>part.text?.includes('SYNTHETIC TA CONTENT')));
-    return {evidence:[{document:'999_Search Package.pdf',page:1,field:'name',value:'Synthetic',finding:'Synthetic evidence.'}]};
+    return {evidence:[{document:'999_Search Package.pdf',page:1,field:'name',value:'Synthetic',finding:'Synthetic evidence.'},{document:'999_Typed Report.pdf',page:1,finding:'Typed name shown.'},{document:'Typing Assistant text',page:null,finding:'TA name shown.'}]};
   };
   const app=createApp();
   const fileId='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -45,12 +46,14 @@ test('PDF stream reaches multipart upload and the document model with TA and the
     form.append('orderData',JSON.stringify({...order,analysisId:commentResult.analysisId,taText:'SYNTHETIC TA CONTENT'}));
     form.append('file0',new Blob([Buffer.from(downloaded.base64,'base64')],{type:'application/pdf'}),'999_Search Package.pdf');
     form.append('fileType_file0','SEARCH_PACKAGE');
+    form.append('file1',new Blob([pdf],{type:'application/pdf'}),'999_Typed Report.pdf');
+    form.append('fileType_file1','TYPED_REPORT');
     const response=await fetch(origin+'/api/searchfix/analyze-documents',{method:'POST',headers,body:form});
     assert.equal(response.status,200);
     const result=await response.json();
     assert.equal(result.overallDecision,'ACCEPTED');
     assert.equal(result.issues[0].decision,'ACCEPTED');
-    assert.deepEqual(result.documents.map(d=>d.status),['ANALYZED','UNVERIFIED']);
+    assert.deepEqual(result.documents.map(d=>d.status),['ANALYZED','ANALYZED','ANALYZED']);
     assert.equal(result.issues[0].evidence[0].document,'999_Search Package.pdf');
     assert.equal(documentCalls,1);
   } finally {await new Promise(resolve=>server.close(resolve));geminiService.generateJSON=originalJSON;geminiService.generateContentWithFiles=originalFiles;}

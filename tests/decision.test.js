@@ -14,7 +14,7 @@ async function runDecisionEngineTests() {
         const issue = {
             issueType: "MISSING_DEED",
             claim: "Missing 1979 deed",
-            requiredDocuments: ["DEED", "SEARCH_PACKAGE"]
+            requiredDocuments: ["SEARCH_PACKAGE"]
         };
 
         const res = await decisionEngine.evaluateIssueDecision(issue, []);

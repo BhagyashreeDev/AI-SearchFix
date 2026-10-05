@@ -47,7 +47,7 @@ test("malformed multipart input cleans up uploaded temporary files", async () =>
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
 test("processing errors cannot be submitted to the decision model as factual evidence", async () => {
-  const res=await decisionEngine.evaluateIssueDecision({requiredDocuments:["DEED"]},[{field:"documentAnalysisStatus",value:"Processing Error"}]);
+  const res=await decisionEngine.evaluateIssueDecision({requiredDocuments:["SEARCH_PACKAGE"]},[{field:"documentAnalysisStatus",value:"Processing Error"}]);
   assert.equal(res.decision,"REVIEW_REQUIRED");
 });
 

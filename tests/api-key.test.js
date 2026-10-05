@@ -1,3 +1,4 @@
+import {testPdf} from './helpers/documents.js';
 import {BACKEND_ORIGIN} from '../extension/deployment.js';
 import {selection} from './helpers/selection.js';
 import test from "node:test";
@@ -120,8 +121,8 @@ test("real HTTP routes accept a per-request key for JSON and multipart and rejec
     const first = await fetch(`${root}/analyze-comments`, { method: "POST", headers: { "Content-Type": "application/json", "X-SearchFix-Gemini-Key": authKey }, body: JSON.stringify(order) });
     assert.equal(first.status, 200);
     const form = new FormData(); form.append("orderData", JSON.stringify(order));
-    form.append("file0", new Blob(["%PDF-1.4 synthetic"], { type: "application/pdf" }), "Deed.pdf");
-    form.append("fileType_file0", "DEED");
+    form.append("file0", new Blob([await testPdf()], { type: "application/pdf" }), "Deed.pdf");
+    form.append("fileType_file0", "SEARCH_PACKAGE");
     const second = await fetch(`${root}/analyze-documents`, { method: "POST", headers: { "X-SearchFix-Gemini-Key": `${authKey}_SECOND` }, body: form });
     assert.equal(second.status, 200); assert.equal((await second.json()).status, "REVIEW_REQUIRED");
     assert.equal(clients.length, 2); assert.notEqual(clients[0], clients[1]);

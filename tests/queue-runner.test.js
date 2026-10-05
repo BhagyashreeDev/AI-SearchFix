@@ -23,7 +23,7 @@ function fixture({ fail = "", empty = false, popup = false } = {}) {
     if (fn.name === "readOrderPage") {
       if (id === "FAIL") throw new Error("Unreadable order");
       return { pageUrl: tab.url, orderNumber: id, comments: [{ author: "Client", date: "2026-09-25", time: "12:00", text: "Check deed against TA" }],
-        attachments: [{ name: "Deed.pdf", url: `${origin}/WRONG-OVERVIEW.pdf` }] };
+        attachments: [{ name: "Search Package.pdf", url: `${origin}/WRONG-OVERVIEW.pdf` }] };
     }
     if (fn.name === "openSupportingLink") {
       if (args[0] === fail) throw new Error("Source unavailable");
@@ -39,27 +39,29 @@ function fixture({ fail = "", empty = false, popup = false } = {}) {
       if (!tab.url.includes(`/${args[2]}.aspx`)) throw new Error("Wrong source window kind");
       if (args[2] === "ta") return { text: "Borrower: Synthetic", pageUrl: tab.url };
       return { pageUrl: tab.url, attachments: empty ? [] : [
-        { name: "Deed.pdf", url: `${origin}/Deed.pdf`, pageUrl: tab.url },
+        { name: "Search Package.pdf", url: `${origin}/Search Package.pdf`, pageUrl: tab.url },
         { name: "TAX.pdf", url: `${origin}/Tax.pdf`, pageUrl: tab.url },
         { name: "Typed report.pdf", url: `${origin}/TA.pdf`, pageUrl: tab.url }
       ] };
     }
     if (fn.name === "readAttachment") {
-      assert.equal(args[0], `${origin}/Deed.pdf`);
+      if(args[2]?.start)assert.equal(args[2].fileName,"Search Package.pdf");
+      assert.equal(args[0], `${origin}/Search Package.pdf`);
       assert.match(tab.url, /attachments.aspx/);
       return { base64: btoa("%PDF-1.4 synthetic") };
     }
+    if(fn.name==='saveAndCloseTypingAssistant'){tabsMap.delete(tabId);return {submitted:true};}
     throw new Error(`Unexpected injected function: ${fn.name}`);
   };
   const api = async (endpoint, body) => {
     events.push([endpoint, body]);
     if (endpoint === "analyze-comments") {
       if (body.orderNumber === "IGNORE") return { orderNumber: body.orderNumber, status: "IGNORED", overallDecision: "IGNORED", issues: [] };
-      return { orderNumber: body.orderNumber, analysisId: "test-id", status: "AWAITING_DOCUMENTS", issues: [{ requiredFiles: [{ fileType: "DEED" }, { fileType: "TYPED_REPORT" }] }] };
+      return { orderNumber: body.orderNumber, analysisId: "test-id", status: "AWAITING_DOCUMENTS", issues: [{ requiredFiles: [{ fileType: "SEARCH_PACKAGE" }, { fileType: "TA" }] }] };
     }
     const order = JSON.parse(body.get("orderData"));
     assert.equal(order.taText, fail === "ta" ? "" : "Borrower: Synthetic");
-    assert.equal(body.get("fileType_file0"), empty || fail === "attachments" ? null : "DEED");
+    assert.equal(body.get("fileType_file0"), empty || fail === "attachments" ? null : "SEARCH_PACKAGE");
     const decision = !body.has("file0") || !order.taText ? "REVIEW_REQUIRED" : "ACCEPTED";
     return { orderNumber: order.orderNumber, status: decision, overallDecision: decision, issues: [] };
   };
@@ -75,6 +77,47 @@ test("queue ignores, reviews failed orders, and continues using only matching at
   assert.equal(f.events.filter(([name]) => name === "openSupportingLink").length, 2);
   assert.equal(f.events.filter(([name]) => name === "readAttachment").length, 1);
   assert.deepEqual([...f.tabsMap.keys()], [99]);
+});
+
+test('TA Save and Close runs before document analysis and TA is never directly removed',async()=>{
+ const f=fixture();await f.runner.run([task('SAVE-TA')]);
+ const saved=f.events.findIndex(([name])=>name==='saveAndCloseTypingAssistant');
+ const submitted=f.events.findIndex(([name])=>name==='analyze-documents');
+ assert.ok(saved>=0 && saved<submitted);
+ assert.equal(f.events.filter(([name])=>name==='saveAndCloseTypingAssistant').length,1);
+ // Only the order tab and Attachments need direct cleanup.
+ assert.equal(f.events.filter(([name])=>name==='remove').length,2);
+});
+
+test('failed Save and Close leaves TA open and reports review required',async()=>{
+ for(const fail of [true,false]){
+  const f=fixture(),inject=f.runner.inject;
+  f.runner.inject=async(id,fn,args)=>{
+   if(fn.name==='saveAndCloseTypingAssistant'){
+    if(fail)throw Error('Save and Close unavailable');
+    return {submitted:true}; // A server validation error may keep the page open.
+   }
+   return inject(id,fn,args);
+  };
+  const [result]=await f.runner.run([task('SAVE-FAIL')]);
+  assert.equal(result.status,'REVIEW_REQUIRED');assert.match(result.reason,/Save and Close/);
+  assert.equal([...f.tabsMap.values()].filter(tab=>tab.url.includes('/ta.aspx')).length,1);
+ }
+});
+
+test('closing during save injection is recognized without a duplicate submission',async()=>{
+ const f=fixture(),inject=f.runner.inject;let attempts=0;
+ f.runner.inject=async(id,fn,args)=>{
+  if(fn.name==='saveAndCloseTypingAssistant'){attempts++;f.tabsMap.delete(id);throw Error('The tab was closed.');}
+  return inject(id,fn,args);
+ };
+ assert.equal((await f.runner.run([task('FAST-CLOSE')]))[0].status,'ACCEPTED');assert.equal(attempts,1);
+});
+
+test('an existing user TA window is never saved automatically',async()=>{
+ const f=fixture();f.tabsMap.set(78,{id:78,url:origin+'/TypingAssistant.aspx',status:'complete'});
+ await assert.rejects(f.runner.releaseTA({tabId:78}),/already open/);
+ assert.ok(f.tabsMap.has(78));assert.equal(f.events.length,0);
 });
 
 test('comment-only Accepted and unmatched Review Required never open supporting views or call the document endpoint', async()=>{
@@ -101,15 +144,15 @@ test("number-prefixed evidence filenames download all mapped PDFs and TA only fr
     return oldInject(tabId,fn,args);
   };
   f.runner.api=async(endpoint,body)=>{
-    if(endpoint==='analyze-comments')return {orderNumber:body.orderNumber,status:'AWAITING_DOCUMENTS',issues:[{requiredFiles:['PACER','PATRIOT','TYPED_REPORT','SEARCH_PACKAGE','INDEX'].map(fileType=>({fileType}))}]};
-    assert.equal(downloads.length,4);
+    if(endpoint==='analyze-comments')return {orderNumber:body.orderNumber,status:'AWAITING_DOCUMENTS',issues:[{requiredFiles:['PACER','PATRIOT','TYPED_REPORT','TA','SEARCH_PACKAGE','INDEX'].map(fileType=>({fileType}))}]};
+    assert.equal(downloads.length,5);
     assert.equal(JSON.parse(body.get('orderData')).taText,'Borrower: Synthetic');
-    assert.deepEqual([...body.entries()].filter(([k])=>k.startsWith('fileType')).map(([,v])=>v).sort(),['INDEX','PACER','PATRIOT','SEARCH_PACKAGE']);
+    assert.deepEqual([...body.entries()].filter(([k])=>k.startsWith('fileType')).map(([,v])=>v).sort(),['INDEX','PACER','PATRIOT','SEARCH_PACKAGE','TYPED_REPORT']);
     return {orderNumber:'PREFIX',status:'ACCEPTED'};
   };
   await f.runner.run([task('PREFIX')]);
   assert.deepEqual(states,['PROCESSING','ACCEPTED']);
-  assert.ok(downloads.every(x=>!/(Cost|THR|Typed)/.test(x)));
+  assert.ok(downloads.every(x=>!/(Cost|THR)/.test(x)));
 });
 
 test("missing attachments and unavailable TA return review and still process the next order", async () => {

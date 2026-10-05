@@ -48,7 +48,7 @@ test("empty or incomplete supporting files produce Review Required even if AI wo
       await analyzeDocumentsController({ body: { orderNumber: "TEST", comments: [comment("Client", "Wrong borrower")], taText }, files: [] }, res);
       assert.equal(res.body.status, "REVIEW_REQUIRED");
       assert.equal(res.body.issues[0].decision, "REVIEW_REQUIRED");
-      assert.match(res.body.issues[0].reason, /DEED/);
+      assert.match(res.body.issues[0].reason, /SEARCH_PACKAGE/);
     }
   } finally { geminiService.generateJSON = originalJSON; geminiService.generateContentWithFiles = originalFiles; }
 });

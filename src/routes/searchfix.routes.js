@@ -21,8 +21,6 @@ router.post("/validate-key", withRequestGeminiKey(async (req, res) => {
 const upload = multer({
     dest: os.tmpdir(),
     limits: {
-        fileSize: 20 * 1024 * 1024, // 20 MB max file size
-        files: 6,
         fieldSize: 1024 * 1024
     }
 });

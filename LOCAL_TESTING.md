@@ -1,4 +1,4 @@
-# Test SearchFix 1.6.0
+# Test SearchFix 1.6.1
 
 ## Offline model tests and preview
 
@@ -15,7 +15,7 @@ The packaged extension currently targets Render. For local development, run:
 
     node scripts/configure-backend.mjs http://127.0.0.1:3000
 
-Install dependencies with npm ci if needed. Start START-SearchFix.cmd and keep its window open. Check http://127.0.0.1:3000/health for version 1.6.0. Reload the project's extension folder in chrome://extensions. Sign in to DataTrace, scan the task queue, save your key and choose one Start analysis button.
+Install dependencies with npm ci if needed. Start START-SearchFix.cmd and keep its window open. Check http://127.0.0.1:3000/health for version 1.6.1. Reload the project's extension folder in chrome://extensions. Sign in to DataTrace, scan the task queue, save your key and choose one Start analysis button.
 
 When returning to the hosted service, run:
 

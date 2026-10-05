@@ -172,12 +172,25 @@ export class GeminiService {
     async uploadFile(filePath, mimeType = "application/pdf") {
         console.log(`[GeminiService] Uploading file to Gemini Files API: ${filePath}`);
 
-        const uploadResult = await this.retryWithBackoff(async () => {
+        let uploadResult = await this.retryWithBackoff(async () => {
             return await this.ai.files.upload({
                 file: filePath,
-                mimeType
+                config: {mimeType}
             });
         });
+
+        try {
+            for (let attempt = 0; uploadResult.state === "PROCESSING" && attempt < 30; attempt++) {
+                await this.wait(1000);
+                uploadResult = await this.ai.files.get({ name: uploadResult.name });
+            }
+            if (uploadResult.state === "PROCESSING" || uploadResult.state === "FAILED" || !uploadResult.uri) {
+                throw new Error("Gemini could not prepare the uploaded document for analysis.");
+            }
+        } catch (error) {
+            await this.deleteFile(uploadResult.name);
+            throw error;
+        }
 
         const uriOrName = uploadResult.uri || uploadResult.name || "uploaded";
         console.log(`[GeminiService] Upload complete. File identifier: ${uriOrName}`);

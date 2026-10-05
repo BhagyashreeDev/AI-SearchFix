@@ -2,23 +2,35 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { backendURL, guessDocumentType, requiredTypes, validateOrder, buildAssistantText, DOCUMENT_TYPES } from "../extension/core.js";
-import { DOCUMENT_TYPES as BACKEND_TYPES } from "../src/config/documentMappings.js";
+import { DOCUMENT_TYPES as BACKEND_TYPES, DOCUMENT_MAPPINGS, getRequiredDocumentTypes } from "../src/config/documentMappings.js";
 import { readAttachment } from "../extension/page-reader.js";
 
 test("extension file types stay compatible with backend", () => assert.deepEqual(DOCUMENT_TYPES, BACKEND_TYPES));
+test("deed and mortgage issues request packages, never standalone DEED or DOT documents", () => {
+  assert.ok(!DOCUMENT_TYPES.includes("DEED") && !DOCUMENT_TYPES.includes("DOT"));
+  for (const types of Object.values(DOCUMENT_MAPPINGS)) {
+    assert.ok(types.every(type => DOCUMENT_TYPES.includes(type)));
+    assert.equal(new Set(types).size, types.length);
+  }
+  for (const issue of ["MISSING_DEED", "DEED_DISCREPANCY", "MORTGAGE_DISCREPANCY", "ADDRESS_DISCREPANCY", "COUNTY_DISCREPANCY", "SUNBIZ_SEARCH_DISCREPANCY"]) {
+    assert.ok(getRequiredDocumentTypes(issue).includes("SEARCH_PACKAGE"));
+  }
+  assert.ok(getRequiredDocumentTypes("TYPING_ERROR").includes("TA"));
+  assert.ok(getRequiredDocumentTypes("TYPING_ERROR").includes("TYPED_REPORT"));
+});
 test("backend credentials and remote destinations cannot be configured accidentally", () => {
   assert.equal(backendURL("http://localhost:3000/", "http://localhost:3000"), "http://localhost:3000");
   for (const value of ["https://example.com", "http://localhost:3000@evil.test", "http://user:pass@localhost:3000", "http://localhost:3000/api", "http://localhost:3000?token=x"]) assert.throws(() => backendURL(value));
 });
 test("ambiguous attachment names are not silently treated as search packages", () => {
   assert.equal(guessDocumentType("file-90210.pdf"), "");
-  assert.equal(guessDocumentType("deed-of-trust.pdf"), "DOT");
+  assert.equal(guessDocumentType("deed-of-trust.pdf"), "");
   assert.equal(guessDocumentType("THR.pdf"), "THR");
   assert.equal(guessDocumentType("typed_report.pdf"), "TYPED_REPORT");
   assert.equal(guessDocumentType("Patriot.pdf"), "PATRIOT");
 });
 test("required documents deduplicate across multiple claims", () => {
-  assert.deepEqual(requiredTypes({issues:[{requiredFiles:[{fileType:"DEED"}]},{requiredFiles:[{fileType:"DEED"},{fileType:"TAX"}]}]}), ["DEED","TAX"]);
+  assert.deepEqual(requiredTypes({issues:[{requiredFiles:[{fileType:"SEARCH_PACKAGE"}]},{requiredFiles:[{fileType:"SEARCH_PACKAGE"},{fileType:"TAX"}]}]}), ["SEARCH_PACKAGE","TAX"]);
 });
 test("missing authors or timestamps cannot lead to silently misordered comments", () => {
   const order = {orderNumber:" TEST-1 ", comments:[{author:"Client", date:"2026-09-24", time:"13:15", text:"Please provide the deed."}]};
@@ -71,7 +83,7 @@ test('PDF reader maps viewer navigation to the supplied authenticated PDF endpoi
     assert.equal(requests.length,1);
     await assert.rejects(readAttachment(viewer+'&PublicAttachmentId='+id,location.href),/one valid file/);
     assert.equal(requests.length,1);
-    for(const [response,expectedCode] of [[new Response('sign in',{status:401}),'PDF_HTTP_ERROR'],[new Response('<html>sign in</html>'),'PDF_CONTENT_INVALID'],[new Response('%PDF-x',{headers:{'content-length':String(21*1024*1024)}}),'PDF_SIZE_LIMIT']]) {
+    for(const [response,expectedCode] of [[new Response('sign in',{status:401}),'PDF_HTTP_ERROR'],[new Response('<html>sign in</html>'),'PDF_CONTENT_INVALID']]) {
       globalThis.fetch=async()=>response;
       assert.equal((await readAttachment(viewer,location.href,true)).errorCode,expectedCode);
     }

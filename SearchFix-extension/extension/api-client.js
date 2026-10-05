@@ -2,7 +2,7 @@ import { backendURL } from "./core.js";
 import { normalizeApiKey } from "./key-format.js";
 export { normalizeApiKey } from "./key-format.js";
 
-export function createApiClient({ backend, getKey, fetcher = fetch, log = () => {}, timeoutMs = 180000 }) {
+export function createApiClient({ backend, getKey, fetcher = fetch, log = () => {}, timeoutMs = 300000 }) {
   return async (path, body, json = false) => {
     const headers = json ? { "Content-Type": "application/json" } : {};
     const key = getKey();

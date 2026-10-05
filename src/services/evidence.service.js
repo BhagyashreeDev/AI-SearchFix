@@ -9,6 +9,7 @@ export class EvidenceService {
         if (!Array.isArray(rawEvidence)) return [];
 
         return rawEvidence.map(item => ({
+            documentTypes: item.documentTypes || [],
             document: item.document || "Unspecified Document",
             page: typeof item.page === "number" ? item.page : null,
             field: item.field || "",

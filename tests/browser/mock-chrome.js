@@ -16,7 +16,9 @@ const tasks = ['IGNORED-ORDER','SYNTHETIC-1','DISPUTED-ORDER','MISSING-ORDER','T
 let nextId = 2;
 const tabs = new Map([[1,{id:1,url:order.pageUrl,status:'complete',title:'Synthetic order'}]]);
 const session = {};
+const manifest = await (await fetch('/extension/manifest.json')).json();
 window.chrome = {
+  runtime: { getManifest: () => manifest },
   storage: { local: { get:async()=>({}), set:async()=>{} }, session: {
     get:async key=>({[key]:session[key]}), set:async values=>Object.assign(session,values), remove:async key=>{delete session[key];}
   } },
@@ -33,8 +35,9 @@ window.chrome = {
     let result;
     if(func.name==='readOrderPage') result={...makeOrder(id),tasks:target.tabId===1?tasks:[]};
     else if(func.name==='openSupportingLink') result={url:`${origin}/${args[0]}.aspx?PublicOrderId=${id}`};
-    else if(func.name==='readSupportingView') result=args[2]==='ta'?{text:'Borrower: Synthetic Borrower',pageUrl:tab.url}:{attachments:id==='MISSING-ORDER'?[]:[{name:'Deed.pdf',url:`${origin}/Deed.pdf`,pageUrl:tab.url}],pageUrl:tab.url};
+    else if(func.name==='readSupportingView') result=args[2]==='ta'?{text:'Borrower: Synthetic Borrower',pageUrl:tab.url}:{attachments:id==='MISSING-ORDER'?[]:[{name:'Search Package.pdf',url:`${origin}/Package.pdf`,pageUrl:tab.url},{name:'Typed Report.docx',url:`${origin}/Typed.docx`,pageUrl:tab.url}],pageUrl:tab.url};
     else if(func.name==='readAttachment') result={base64:btoa('%PDF-1.4 synthetic')};
+    else if(func.name==='saveAndCloseTypingAssistant'){tabs.delete(target.tabId);result={submitted:true};}
     else throw new Error(`Unexpected preview function ${func.name}`);
     return [{result}];
   } }
@@ -51,11 +54,11 @@ window.fetch = async (url, options) => {
   const common={orderNumber:source.orderNumber,analysisId:'SYNTHETIC-ANALYSIS',commentAnalysis:{selectedComment:{...source.comments[0],role:source.orderNumber==='IGNORED-ORDER'?'INTERNAL':'CLIENT'},contextCommentsUsed:[],selectionReason:"This is the latest meaningful request in the supplied comments.",roleReason:source.orderNumber==='IGNORED-ORDER'?"ADS author and internal response context.":"Outsource author and client request context.",totalComments:1,consideredComments:1}};
   if(source.orderNumber==='TASK-ORDER')return new Response(JSON.stringify({...common,status:'ACCEPTED',overallDecision:'ACCEPTED',decisionBasis:'CLIENT_TASK',issues:[],documents:[],reason:'Client requests a rush ETA; no discrepancy is alleged.',nextSteps:['Contact the abstractor for an ETA and report back to the client.']}));
   if(String(url).endsWith('analyze-comments')) {
-    return new Response(JSON.stringify(source.orderNumber==='IGNORED-ORDER'?{...common,status:'IGNORED',overallDecision:'IGNORED',reason:'ADSSearchType author.',issues:[]}:{...common,status:'AWAITING_DOCUMENTS',issues:[{issueType:'TYPING_ERROR',claim:'Verify the typed borrower name against the deed.',requiredFiles:[{fileType:'DEED'},{fileType:'TYPED_REPORT'}]}]}));
+    return new Response(JSON.stringify(source.orderNumber==='IGNORED-ORDER'?{...common,status:'IGNORED',overallDecision:'IGNORED',reason:'ADSSearchType author.',issues:[]}:{...common,status:'AWAITING_DOCUMENTS',issues:[{issueType:'TYPING_ERROR',claim:'Verify the typed borrower name against the deed.',requiredFiles:[{fileType:'SEARCH_PACKAGE'},{fileType:'TYPED_REPORT'},{fileType:'TA'}]}]}));
   }
   if(String(url).endsWith('analyze-documents')) {
     const decision=options.body.has('file0')&&body.taText?(body.orderNumber==='DISPUTED-ORDER'?'DISPUTED':'ACCEPTED'):'REVIEW_REQUIRED';
-    return new Response(JSON.stringify({...common,status:decision,overallDecision:decision,documents:[...(options.body.has('file0')?[{name:'Deed.pdf',type:'DEED',status:'ANALYZED'}]:[]),{name:'Typing Assistant text',type:'TYPED_REPORT',status:'ANALYZED'}],issues:[{nextSteps:[decision==='ACCEPTED'?'Have the search team correct the identified name and recheck it.':decision==='DISPUTED'?'Send the cited evidence to the search team for the response.':'Obtain the missing deed and rerun this order.'],issueType:'TYPING_ERROR',category:'Typing',clientClaim:'Verify borrower name',requiredDocuments:['DEED','TYPED_REPORT'],decision,reason:decision==='ACCEPTED'?'Synthetic evidence supports the claim.':decision==='DISPUTED'?'Synthetic evidence contradicts the claim.':'Deed or TA was not supplied.',evidence:body.taText?[{document:'Typing Assistant text',page:null,finding:'Synthetic Borrower appears in the TA text.'}]:[]}]}));
+    return new Response(JSON.stringify({...common,status:decision,overallDecision:decision,documents:[...(options.body.has('file0')?[{name:'Search Package.pdf',type:'SEARCH_PACKAGE',status:'ANALYZED'}]:[]),{name:'Typed Report.docx',type:'TYPED_REPORT',status:'ANALYZED'},{name:'Typing Assistant text',type:'TA',status:'ANALYZED'}],issues:[{nextSteps:[decision==='ACCEPTED'?'Have the search team correct the identified name and recheck it.':decision==='DISPUTED'?'Send the cited evidence to the search team for the response.':'Obtain the missing deed and rerun this order.'],issueType:'TYPING_ERROR',category:'Typing',clientClaim:'Verify borrower name',requiredDocuments:['SEARCH_PACKAGE','TYPED_REPORT','TA'],decision,reason:decision==='ACCEPTED'?'Synthetic evidence supports the claim.':decision==='DISPUTED'?'Synthetic evidence contradicts the claim.':'Deed or TA was not supplied.',evidence:body.taText?[{document:'Typing Assistant text',page:null,finding:'Synthetic Borrower appears in the TA text.'}]:[]}]}));
   }
   throw new Error('Unexpected preview request');
 };

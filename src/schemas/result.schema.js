@@ -41,6 +41,7 @@ export const SearchFixStep1ResultSchema = z.object({
 });
 
 export const EvidenceItemSchema = z.object({
+    documentTypes:z.array(z.enum(DOCUMENT_TYPES)).optional(),
     document: z.string(),
     page: z.number().nullable().optional(),
     field: z.string().optional(),

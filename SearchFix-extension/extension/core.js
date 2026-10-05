@@ -1,5 +1,5 @@
 import { BACKEND_ORIGIN } from "./deployment.js";
-export const DOCUMENT_TYPES = ["SEARCH_PACKAGE", "DEED", "DOT", "TAX", "PA", "LEGAL_DESCRIPTION", "MAP", "LIEN", "PACER", "PATRIOT", "TYPED_REPORT", "COST_WORKSHEET", "THR", "INDEX", "ATTORNEY_OPINION", "VENDOR_INSTRUCTIONS", "HOA_DOCUMENT", "MAILING_LIST", "PROPERTY_REPORT", "UPDATE_REPORT", "LIEN_REGISTRY", "COURT_SEARCH", "PROBATE", "SURVEY", "TORRENS", "COVER_SHEET", "CHECKLIST", "SUNBIZ", "ASSIGNMENT"];
+export const DOCUMENT_TYPES = ["TA", "SEARCH_PACKAGE", "TAX", "PA", "LEGAL_DESCRIPTION", "MAP", "LIEN", "PACER", "PATRIOT", "TYPED_REPORT", "COST_WORKSHEET", "THR", "INDEX", "ATTORNEY_OPINION", "VENDOR_INSTRUCTIONS", "HOA_DOCUMENT", "MAILING_LIST", "PROPERTY_REPORT", "UPDATE_REPORT", "LIEN_REGISTRY", "COURT_SEARCH", "PROBATE", "SURVEY", "TORRENS", "COVER_SHEET", "CHECKLIST", "SUNBIZ", "ASSIGNMENT"];
 
 export const DEFAULT_SETTINGS = {
   backend: BACKEND_ORIGIN,
@@ -27,6 +27,7 @@ export function backendURL(value, configuredOrigin = BACKEND_ORIGIN) {
 export function guessDocumentType(name) {
   const words = name.toUpperCase().replace(/[^A-Z0-9]+/g, " ");
   const rules = [
+    [/\bTYPING ?ASSISTANT\b/, "TA"],
     [/\b(ATTORNEY(?: S)?(?: TITLE)? OPINION|AO|ATO)\b/, "ATTORNEY_OPINION"],
     [/\b(VENDOR ?MANAGEMENT|VENDOR INSTRUCTIONS|VM|ORIGINAL ?REQUEST|SPECIAL REQUIREMENTS)\b/, "VENDOR_INSTRUCTIONS"],
     [/\b(HOA|HOMEOWNERS? ASSOCIATION)\b/, "HOA_DOCUMENT"],
@@ -42,8 +43,8 @@ export function guessDocumentType(name) {
     [/\bASSIGNMENT\b/, "ASSIGNMENT"],
     [/\b(TYPED|REPORT TYPED|TYPING|TA)\b/, "TYPED_REPORT"],
     [/\b(PACER|BANKRUPTCY)\b/, "PACER"], [/\bPATRIOT\b/, "PATRIOT"],
-    [/\b(THR|TRANSACTION HISTORY)\b/, "THR"], [/\b(DEED OF TRUST|DOT|MORTGAGE)\b/, "DOT"],
-    [/\bDEED\b/, "DEED"], [/\bTAX\b/, "TAX"], [/\b(PA|PASANP|PASNAP|PASNAPSHOT|PROPERTY ASSESSMENT)\b/, "PA"],
+    [/\b(THR|TRANSACTION HISTORY)\b/, "THR"],
+    [/\bTAX\b/, "TAX"], [/\b(PA|PASANP|PASNAP|PASNAPSHOT|PROPERTY ASSESSMENT)\b/, "PA"],
     [/\bLEGAL\b/, "LEGAL_DESCRIPTION"], [/\b(MAP|PLAT)\b/, "MAP"],
     [/\bLIEN\b/, "LIEN"], [/\bCOST\b/, "COST_WORKSHEET"],
     [/\b(SEARCH INDEX|SEARCH INDEXES|INDEX|INDEXES)\b/, "INDEX"],
@@ -97,4 +98,19 @@ export function buildAssistantText(result) {
   if (result.nextSteps?.length) lines.push("", "Next steps:", ...result.nextSteps.map(step=>`- ${step}`));
   lines.push("", "Review notes only. No order fields, files, comments, or website Typing Assistant content have been changed.");
   return lines.join("\n");
+}
+
+// Look inside a bundle when a requested standalone source is unavailable.
+// TA and the actual Typed Report always remain separate, explicit sources.
+export function selectEvidenceAttachments(attachments, required) {
+  const files=[...new Map(attachments.map(file=>[file.url,{...file,type:guessDocumentType(file.name)}])).values()];
+  const preferred=files.filter(file=>! /\.docx?$/i.test(file.name) || !files.some(other=>/\.pdf$/i.test(other.name) && other.name.replace(/\.pdf$/i,'').toLowerCase()===file.name.replace(/\.docx?$/i,'').toLowerCase()));
+  const selected=preferred.filter(file=>file.type!=='TA' && required.includes(file.type));
+  const needsBundle=required.some(type=>!['TA','TYPED_REPORT'].includes(type) && !selected.some(file=>file.type===type));
+  if(needsBundle){
+    const packages=preferred.filter(file=>file.type==='SEARCH_PACKAGE');
+    const bundles=packages.length?packages:preferred.filter(file=>file.type==='PROPERTY_REPORT');
+    for(const file of bundles)if(!selected.some(other=>other.url===file.url))selected.push(file);
+  }
+  return selected;
 }

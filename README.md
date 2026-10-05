@@ -1,6 +1,6 @@
-# SearchFix 1.6.0
+# SearchFix 1.6.1
 
-Read-only SearchFix review: Chrome reads the signed-in DataTrace pages and sends current comments and selected evidence to the configured analysis service. It never posts comments, edits orders, claims tasks or saves Typing Assistant changes.
+Read-only SearchFix review: Chrome reads the signed-in DataTrace pages and sends current comments and selected evidence to the configured analysis service. It never posts comments, edits order fields or claims tasks. After reading an unchanged Typing Assistant window opened by the extension, it uses the website's Save and Close button. If saving cannot finish, that window stays open for manual attention.
 
 ## Use
 
@@ -9,7 +9,7 @@ Read-only SearchFix review: Chrome reads the signed-in DataTrace pages and sends
 3. Save your key with **Add Gemini API key**. Saving makes no Gemini test request. The key lasts for this browser session; there is no environment-key fallback.
 4. Click an order number to open its Overview in the same original browser tab.
 5. Click **Start analysis** beside the chosen order. Only that order runs. Keep the panel open.
-6. Expand **Chosen comment** to see the original text, AI selection explanation and author interpretation. Read findings, document names and recommended next steps below it.
+6. Click the arrow, order row or detail text to expand/collapse its details; findings remain available when reopened. The order-number link still opens Overview. Expand **Chosen comment** to see the original text, AI selection explanation and author interpretation. Read findings, document names and recommended next steps below it.
 
 ## Analysis
 
@@ -26,7 +26,11 @@ No historical workbook, PDF or JSON reference library is used or bundled. Prompt
 
 ## Existing boundaries
 
-PDFs are fetched from the matched order's Attachments view using the current browser session; no PDF-toolbar selector or Ctrl+S is needed. Typing Assistant is read as text. Filename prefixes and attachment row order may vary. Limits remain six PDFs, 20 MB each and 40 MB total. All comments are already visible on Overview; there is no automatic pagination. Required document mappings remain in src/config/documentMappings.js; a missing mapped type requires review even when another package might contain related material. The analyst should verify that situation manually.
+PDF, DOC and DOCX attachments are fetched from the matched order's Attachments view using the current browser session; no PDF-toolbar selector or Ctrl+S is needed. TA is read from the website's Typing Assistant link. The actual Typed Report attachment is a separate source, created from TA; issues requiring a Typed Report compare both. Filename prefixes and attachment row order may vary. All comments are already visible on Overview; there is no automatic pagination.
+
+There is no application cap on attachment count, individual file size or total upload size. Browser downloads transfer in small chunks. PDFs are analyzed in batches covering all pages, with citations restored to original page numbers. Word documents use extracted text, including headers, notes and text boxes; embedded images and page layout cannot be verified from this extraction. Unreadable or incomplete evidence requires review. Machine resources, Gemini quotas and provider PDF limits still apply; an exceptionally large single page may need compression. Each extension request waits up to five minutes. Batching does not guarantee an arbitrarily large order will finish within that time.
+
+Deeds and deeds of trust are checked inside Search Package; DEED and DOT are not standalone requested document types. Other missing mapped sources are also sought there, except TA and Typed Report, which must remain separate. When no Search Package is listed, Property Report is used as the candidate bundle (including MD/NV). The current implementation reads package pages included in that report; it does not follow links or extract embedded files from it. A matching filename alone does not satisfy a missing type: the model must identify its contents with a quote and source citation. Otherwise the order requires review.
 
 Results stay in panel memory. Saved backend analysis sessions expire after 30 minutes or restart; the document stage reuses the chosen comment and rejects changed order/comment context. Key saving, model fallbacks, rate limits and website access behavior are otherwise unchanged.
 

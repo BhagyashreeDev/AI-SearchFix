@@ -1,4 +1,4 @@
-# Deploy SearchFix 1.6.0 on Render
+# Deploy SearchFix 1.6.1 on Render
 
 The Node.js backend runs on Render. The Chrome extension stays on each user's PC and reads DataTrace through that user's signed-in browser. The extension sends relevant comments, PDFs, TA text, and the entered API key to your Render service over HTTPS; that service calls Gemini. It does not write anything back to DataTrace. This guide prepares a deployment; no service has been published for you.
 
@@ -48,7 +48,7 @@ Click **Deploy Web Service**. Wait for deployment to finish and copy the assigne
 Open `https://YOUR-SERVICE.onrender.com/health`. Expected response:
 
 ```json
-{"status":"OK","version":"1.6.0","credentialMode":"request-key-only"}
+{"status":"OK","version":"1.6.1","credentialMode":"request-key-only"}
 ```
 
 This proves the service is running, not that your Gemini account has model access. Saving a key makes no verification request; model access is tested during actual analysis. Quota counters use data/runtime/gemini-usage.json and need persistent storage to survive replacement of the server filesystem. Analysis sessions are held in memory for up to 30 minutes, so keep one instance. A restart or deployment clears those sessions; finish active analyses before deploying, or rerun affected orders afterward. [Render health checks](https://render.com/docs/health-checks).

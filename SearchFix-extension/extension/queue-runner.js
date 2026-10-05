@@ -1,5 +1,5 @@
-import { guessDocumentType, requiredTypes, validateOrder } from "./core.js";
-import { readOrderPage, readAttachment, readSupportingView, openSupportingLink } from "./page-reader.js";
+import { requiredTypes, validateOrder, selectEvidenceAttachments } from "./core.js";
+import { readOrderPage, readAttachment, readSupportingView, openSupportingLink, saveAndCloseTypingAssistant } from "./page-reader.js";
 
 // Dependencies are injected so the full multi-order flow can be tested without
 // sending order data to Gemini or interacting with production tasks.
@@ -9,6 +9,7 @@ export class QueueRunner {
     Object.assign(this, { tabs, inject, api, settings, onProgress, onResult, onOrderState, onAnalysis, onDocuments, wait, log });
     this.stopped = false;
     this.ownedTabs = new Set();
+    this.taTabs = new Set();
   }
 
   stop() { this.stopped = true; this.log('queue.stop.requested'); }
@@ -34,6 +35,7 @@ export class QueueRunner {
       if (target.origin !== new URL(snapshot.pageUrl).origin) throw new Error("Source link belongs to another website.");
       tab = await this.tabs.create({ url: target.href, active: false });
       this.ownedTabs.add(tab.id);
+      if(kind==='ta')this.taTabs.add(tab.id);
       await this.ready(tab.id);
     } else {
       // JavaScript popup links may open a new tab or reuse their named window.
@@ -42,12 +44,16 @@ export class QueueRunner {
           .filter(t => t.id !== orderTab && (!before.has(t.id) || t.openerTabId === orderTab))
           .sort((a, b) => Number(before.has(a.id)) - Number(before.has(b.id)));
         for (const candidate of candidates) {
-          if (!before.has(candidate.id) && candidate.openerTabId === orderTab) this.ownedTabs.add(candidate.id);
+          if (!before.has(candidate.id) && candidate.openerTabId === orderTab) {
+            this.ownedTabs.add(candidate.id);
+            if(kind==='ta' && /^\/TypingAssistant\.aspx$/i.test(new URL(candidate.url).pathname))this.taTabs.add(candidate.id);
+          }
         }
         for (const candidate of candidates) {
           if (candidate.status !== "complete") continue;
           try {
             const view = await this.readSource(candidate.id, snapshot, kind);
+            if(kind==='ta' && this.ownedTabs.has(candidate.id))this.taTabs.add(candidate.id);
             return { ...view, tabId: candidate.id };
           } catch { /* Popup may still be loading or belong to another order. */ }
         }
@@ -85,6 +91,23 @@ export class QueueRunner {
     }
   }
 
+  async releaseTA(view) {
+    if(!this.ownedTabs.has(view.tabId))throw Error('Typing Assistant was already open. Use its Save and Close button manually.');
+    this.taTabs.add(view.tabId);
+    this.log('ta.save-close.start',{tabId:view.tabId});
+    let submissionError;
+    try { await this.inject(view.tabId,saveAndCloseTypingAssistant,[view.pageUrl,view.formState]); }
+    catch(error){submissionError=error;}
+    // Saving may close the window before executeScript can return its result.
+    for(let attempt=0;attempt<40;attempt++){
+      const open=(await this.tabs.query({})).some(tab=>tab.id===view.tabId);
+      if(!open){this.ownedTabs.delete(view.tabId);this.taTabs.delete(view.tabId);this.log('ta.save-close.complete',{tabId:view.tabId});return;}
+      if(submissionError && !/returned no page data|closed|removed|navigat|frame/i.test(submissionError.message))throw submissionError;
+      await this.wait(250);
+    }
+    throw Error('Typing Assistant did not close after Save and Close. Its window was left open; check the website status and finish closing it manually.');
+  }
+
   review(orderNumber, reason, previous = {}) {
     return { ...previous, orderNumber, status: "REVIEW_REQUIRED", overallDecision: "REVIEW_REQUIRED", reason };
   }
@@ -120,28 +143,26 @@ export class QueueRunner {
     const selected = [];
     let taText = "";
     // Attachments are collected from the Attachments link only, not Overview.
-    if (required.some(type => type !== "TYPED_REPORT")) {
+    if (required.some(type => type !== "TA")) {
       this.onProgress(`Opening Attachments for ${order.orderNumber}…`);
       try {
         const view = await this.openSource(tabId, snapshot, "attachments");
-        for (const file of view.attachments) {
-          const type = guessDocumentType(file.name);
-          if (type !== "TYPED_REPORT" && required.includes(type) && !selected.some(f => f.url === file.url)) {
-            selected.push({ ...file, type, tabId: view.tabId });
-          }
-        }
+        selected.push(...selectEvidenceAttachments(view.attachments, required).map(file=>({...file,tabId:view.tabId})));
         this.log('attachments.selected', {count:view.attachments.length,selected:selected.map(file=>file.type)});
       } catch (error) { this.log('source.failed',{kind:'attachments'}); warnings.push(`Attachments: ${error.message}`); }
     }
-    if (required.includes("TYPED_REPORT")) {
+    if (required.includes("TA")) {
       this.onProgress(`Reading Typing Assistant for ${order.orderNumber}…`);
-      try { taText = (await this.openSource(tabId, snapshot, "ta")).text || ""; }
+      try {
+        const view=await this.openSource(tabId,snapshot,"ta");
+        taText=view.text || "";
+        await this.releaseTA(view);
+      }
       catch (error) { this.log('source.failed',{kind:'ta'}); warnings.push(`Typing Assistant: ${error.message}`); }
     }
     const documents=selected.map(file=>({name:file.name,type:file.type,status:"FOUND"}));
-    if(taText)documents.push({name:"Typing Assistant text",type:"TYPED_REPORT",status:"DOWNLOADED"});
+    if(taText)documents.push({name:"Typing Assistant text",type:"TA",status:"DOWNLOADED"});
     this.currentDocuments = documents;this.onDocuments(documents);
-    if (selected.length > 6) return this.review(order.orderNumber, "More than 6 corresponding PDFs were found; select the required documents manually.", {...step1,documents});
     const form = new FormData();
     form.append("orderData", JSON.stringify({ ...order, analysisId: step1.analysisId, taText }));
     let total = 0;
@@ -151,20 +172,29 @@ export class QueueRunner {
         // Re-check source identity just before fetching evidence.
         const fresh = await this.readSource(file.tabId, snapshot, "attachments");
         if (!fresh.attachments.some(a => a.url === file.url)) throw new Error("The attachment listing changed.");
-        const downloaded = await this.inject(file.tabId, readAttachment, [file.url, fresh.pageUrl]);
-        const bytes = Uint8Array.from(atob(downloaded.base64), c => c.charCodeAt(0));
-        if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") throw new Error("The file is not a PDF.");
-        if (bytes.length > 20 * 1024 * 1024 || total + bytes.length > 40 * 1024 * 1024) throw new Error("PDF upload size limit exceeded.");
-        total += bytes.length;
+        let downloaded = await this.inject(file.tabId, readAttachment, [file.url, fresh.pageUrl, {start:true,fileName:file.name}]);
+        const chunks=[];let byteCount=0;const transferId=downloaded.transferId;
+        try{
+          while(true){
+            const chunk=Uint8Array.from(atob(downloaded.base64),c=>c.charCodeAt(0));chunks.push(chunk);byteCount+=chunk.length;
+            if(!transferId || downloaded.done)break;
+            if(downloaded.nextOffset!==byteCount)throw Error('Attachment transfer is incomplete.');
+            downloaded=await this.inject(file.tabId,readAttachment,[file.url,fresh.pageUrl,{id:transferId,offset:downloaded.nextOffset}]);
+          }
+          if(downloaded.size!=null && byteCount!==downloaded.size)throw Error('Attachment transfer is incomplete.');
+        }finally{if(transferId)await this.inject(file.tabId,readAttachment,[file.url,fresh.pageUrl,{id:transferId,release:true}]).catch(()=>{});}
+        const mimeType = downloaded.mimeType || "application/pdf";
+        if (!["application/pdf","application/msword","application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(mimeType)) throw new Error("Unsupported attachment format.");
+        total += byteCount;
         documents[index].status="DOWNLOADED";this.onDocuments(documents);
-        this.log('pdf.download.complete',{fileType:file.type,bytes:bytes.length});
-        form.append(`file${index}`, new Blob([bytes], { type: "application/pdf" }), file.name);
+        this.log('pdf.download.complete',{fileType:file.type,bytes:byteCount});
+        form.append(`file${index}`, new Blob(chunks, { type: mimeType }), file.name);
         form.append(`fileType_file${index}`, file.type);
       } catch (error) { documents[index].status="FAILED";this.onDocuments(documents);this.log('pdf.download.failed',{fileType:file.type,errorCode:error.code,httpStatus:error.httpStatus}); warnings.push(`${file.name}: ${error.message}`); }
     }
     await this.assertUnchanged(tabId, snapshot);
     this.onProgress(`Analyzing evidence for ${order.orderNumber}…`);
-    this.log('evidence.submit',{bytes:total,characters:taText.length,missing:required.filter(type=>type==='TYPED_REPORT'?!taText:![...form.entries()].some(([key,value])=>key.startsWith('fileType_')&&value===type))});
+    this.log('evidence.submit',{bytes:total,characters:taText.length,missing:required.filter(type=>type==='TA'?!taText:![...form.entries()].some(([key,value])=>key.startsWith('fileType_')&&value===type))});
     // Empty evidence is deliberately submitted so missing files yield REVIEW_REQUIRED.
     for(const doc of documents)if(doc.status==="DOWNLOADED")doc.status="ANALYZING";
     this.onDocuments(documents);
@@ -197,14 +227,14 @@ export class QueueRunner {
         this.log('order.complete',{orderNumber:task.orderNumber,status:result.overallDecision || result.status});
         await this.onResult(result, results.length, unique.length, task);
         // Close only tabs this run created, leaving the user's existing tabs intact.
-        for (const id of [...this.ownedTabs].filter(id => id !== orderTab.id)) {
+        for (const id of [...this.ownedTabs].filter(id => id !== orderTab.id && !this.taTabs.has(id))) {
           await this.tabs.remove(id).catch(() => {});
           this.ownedTabs.delete(id);
         }
       }
       return results;
     } finally {
-      for (const id of this.ownedTabs) await this.tabs.remove(id).catch(() => {});
+      for (const id of this.ownedTabs)if(!this.taTabs.has(id))await this.tabs.remove(id).catch(() => {});
       this.ownedTabs.clear();
       this.log('queue.cleanup.complete',{count:results.length});
     }

@@ -1,3 +1,5 @@
+import {attachmentFormat} from '../services/documentSources.service.js';
+import {missingEvidenceTypes} from '../services/evidenceCoverage.service.js';
 import fs from "fs";
 import { issueClassificationService } from "../services/issueClassification.service.js";
 import { documentSelectionService } from "../services/documentSelection.service.js";
@@ -131,18 +133,16 @@ export async function analyzeDocumentsController(req, res) {
         const uploadedFiles = [];
         if (req.files && Array.isArray(req.files)) {
             for (const file of req.files) {
-                const header = Buffer.alloc(5);
-                const fd = fs.openSync(file.path, "r");
-                try { fs.readSync(fd, header, 0, 5, 0); } finally { fs.closeSync(fd); }
-                if (header.toString() !== "%PDF-") return res.status(400).json({error: "Only PDF attachments are supported."});
+                let format;
+                try {format=attachmentFormat(file);} catch(error){return res.status(400).json({error:error.message});}
 
                 let fileType = "SEARCH_PACKAGE";
                 if (req.body[`fileType_${file.fieldname}`]) {
                     fileType = req.body[`fileType_${file.fieldname}`];
+                } else if (/PROPERTY[ _-]*(?:VIEW[ _-]*)?REPORT/i.test(file.originalname)) {
+                    fileType = "PROPERTY_REPORT";
                 } else if (file.originalname.toUpperCase().includes("INDEX")) {
                     fileType = "INDEX";
-                } else if (file.originalname.toUpperCase().includes("DEED")) {
-                    fileType = "DEED";
                 } else if (file.originalname.toUpperCase().includes("TAX")) {
                     fileType = "TAX";
                 } else if (file.originalname.toUpperCase().includes("PACER")) {
@@ -153,19 +153,18 @@ export async function analyzeDocumentsController(req, res) {
                     fileType = "TYPED_REPORT";
                 } else if (file.originalname.toUpperCase().includes("THR")) {
                     fileType = "THR";
-                } else if (file.originalname.toUpperCase().includes("DOT")) {
-                    fileType = "DOT";
                 }
                 if (!DOCUMENT_TYPES.includes(fileType)) return res.status(400).json({error:"Invalid attachment document type."});
 
                 uploadedFiles.push({
                     fileName: file.originalname,
                     fileType,
+                    format,
                     path: file.path
                 });
             }
         }
-        if (taText.trim()) uploadedFiles.push({fileName:"Typing Assistant text", fileType:"TYPED_REPORT", inlineText:taText.trim()});
+        if (taText.trim()) uploadedFiles.push({fileName:"Typing Assistant text", fileType:"TA", inlineText:taText.trim()});
         trace('evidence.received',{count:(req.files || []).length,bytes:(req.files || []).reduce((n,f)=>n+(f.size || 0),0),characters:taText.length});
 
         // Stage 4-6: PDF Document Analysis, Evidence Extraction & Decision Engine
@@ -181,7 +180,7 @@ export async function analyzeDocumentsController(req, res) {
             trace('evidence.analysis.start',{issueType:issue.issueType,required:issue.requiredDocuments});
             const rawEvidence = await documentAnalysisService.analyzeDocumentsForIssue(issue, uploadedFiles);
             const formattedEvidence = evidenceService.formatEvidence(rawEvidence);
-            const missing = issue.requiredDocuments.filter(type => !uploadedFiles.some(file => file.fileType === type));
+            const missing = missingEvidenceTypes(issue.requiredDocuments, uploadedFiles, formattedEvidence);
             missingRequiredEvidence ||= missing.length > 0;
             trace('evidence.analysis.complete',{issueType:issue.issueType,count:formattedEvidence.length,missing});
             const { decision, reason, nextSteps = [] } = missing.length
@@ -210,7 +209,7 @@ export async function analyzeDocumentsController(req, res) {
             commentAnalysis: route.commentAnalysis,
             nextSteps: route.nextSteps || [],
             issues: processedIssues,
-            documents: uploadedFiles.map(file=>({name:file.fileName,type:file.fileType,status:processedIssues.some(i=>i.evidence.some(e=>e.document===file.fileName && e.field!=="documentAnalysisStatus"))?"ANALYZED":"UNVERIFIED"})),
+            documents: uploadedFiles.map(file=>({name:file.fileName,type:file.fileType,status:processedIssues.some(i=>i.evidence.some(e=>e.document===file.fileName && e.field==="documentAnalysisStatus"))?"UNVERIFIED":processedIssues.some(i=>i.evidence.some(e=>e.document===file.fileName && e.field!=="documentAnalysisStatus"))?"ANALYZED":"UNVERIFIED"})),
             overallDecision,
             status: overallDecision
         };

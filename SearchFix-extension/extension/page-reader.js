@@ -90,7 +90,8 @@ export function readOrderPage(settings, captureErrors = false) {
   }
 }
 
-export async function readAttachment(url, expectedPageUrl, captureErrors = false) {
+export async function readAttachment(url, expectedPageUrl, transfer = false, captureErrors = false) {
+  if(typeof transfer === "boolean"){captureErrors=transfer;transfer=null;}
   const failure = (code, message, httpStatus) => Object.assign(new Error(message), {code, httpStatus});
   try {
   if (location.href !== expectedPageUrl) throw new Error("The order page changed. Read the order again.");
@@ -108,33 +109,51 @@ export async function readAttachment(url, expectedPageUrl, captureErrors = false
     target.search = new URLSearchParams({publicAttachmentId:ids[0][1]}).toString();
     target.hash = '';
   }
+  const encode = async blob => {
+    const bytes=new Uint8Array(await blob.arrayBuffer());let binary='';
+    for(let index=0;index<bytes.length;index+=32768)binary+=String.fromCharCode(...bytes.subarray(index,index+32768));
+    return btoa(binary);
+  };
+  const readChunk=async(record,id,offset)=>{
+    if(!Number.isInteger(offset)||offset<0||offset>=record.blob.size)throw Error('Invalid attachment transfer offset.');
+    const next=Math.min(offset+1024*1024,record.blob.size);
+    const base64=await encode(record.blob.slice(offset,next));
+    if(next===record.blob.size)globalThis.__searchFixTransfers.delete(id);
+    return {base64,transferId:id,nextOffset:next,done:next===record.blob.size,size:record.blob.size,mimeType:record.mimeType};
+  };
+  if(transfer?.id){
+    const record=globalThis.__searchFixTransfers?.get(transfer.id);
+    if(transfer.release){globalThis.__searchFixTransfers?.delete(transfer.id);return {released:true};}
+    if(!record || record.url!==target.href || record.page!==expectedPageUrl)throw Error('Attachment transfer expired or belongs to another source.');
+    return await readChunk(record,transfer.id,transfer.offset);
+  }
   let response;
+  // Word attachments may redirect to a download response instead of a viewer.
+  // same-origin mode blocks cross-site redirects before fetching their content.
+  const wordDownload = /\.docx?$/i.test(transfer?.fileName || target.pathname);
   try {
-    response = await fetch(target.href, { method: "GET", credentials: "same-origin", redirect: "error", signal: AbortSignal.timeout(30000) });
+    response = await fetch(target.href, { method: "GET", credentials: "same-origin", mode: "same-origin", redirect: wordDownload ? "follow" : "error", signal: AbortSignal.timeout(300000) });
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') throw failure('PDF_TIMEOUT', 'The PDF download timed out. Retry after checking the website connection.');
     throw failure('PDF_NETWORK_OR_REDIRECT', 'The PDF request failed or redirected. Confirm the file opens in this signed-in browser, then retry.');
   }
+  if (response.url && new URL(response.url).origin !== location.origin) throw failure('PDF_NETWORK_OR_REDIRECT', 'The attachment redirected outside this website. Check the attachment link.');
   if (!response.ok) throw failure('PDF_HTTP_ERROR', `Attachment download failed (${response.status}). Check the website session and access to this file.`, response.status);
-  const limit = 20 * 1024 * 1024;
-  if (Number(response.headers.get("content-length")) > limit) { await response.body?.cancel(); throw failure('PDF_SIZE_LIMIT', "PDF exceeds 20 MB."); }
-  const reader = response.body.getReader();
-  const chunks = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > limit) { await reader.cancel(); throw failure('PDF_SIZE_LIMIT', "PDF exceeds 20 MB."); }
-    chunks.push(value);
+  const blob=await response.blob();
+  const bytes=new Uint8Array(await blob.slice(0,8).arrayBuffer());
+  const pdf = new TextDecoder().decode(bytes.slice(0, 5)) === "%PDF-";
+  const doc = [208,207,17,224,161,177,26,225].every((value,index)=>bytes[index]===value);
+  const docx = bytes[0]===80 && bytes[1]===75 && bytes[2]===3 && bytes[3]===4;
+  if (!pdf && !doc && !docx) throw failure('PDF_CONTENT_INVALID', "The attachment response is not a PDF or Word document. It may be a sign-in or viewer page; check access in this browser.", response.status);
+  const mimeType=pdf?'application/pdf':doc?'application/msword':'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if(transfer?.start){
+    globalThis.__searchFixTransfers ||= new Map();
+    const id=crypto.randomUUID(),record={blob,mimeType,url:target.href,page:expectedPageUrl};
+    globalThis.__searchFixTransfers.set(id,record);
+    setTimeout(()=>globalThis.__searchFixTransfers?.delete(id),300000);
+    return await readChunk(record,id,0);
   }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-  if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") throw failure('PDF_CONTENT_INVALID', "The attachment response is not a PDF. It may be a sign-in or viewer page; open the file in this browser to check access.", response.status);
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 32768) binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
-  return { base64: btoa(binary), size };
+  return {base64:await encode(blob),size:blob.size,mimeType};
   } catch (error) {
     if (captureErrors) return {searchFixError:error.message,errorCode:error.code || 'PDF_READ_FAILED',httpStatus:error.httpStatus};
     throw error;
@@ -165,7 +184,8 @@ export function readSupportingView(orderNumber, publicOrderId, kind, captureErro
     if (reports.length > 1 || (!reports.length && values.length > 1)) throw new Error("Multiple TA text boxes contain content; cannot identify one report reliably.");
     const content = (reports[0] || values[0] || source?.innerText || "").trim();
     if (!content || content.length > 120000) throw new Error("Typing Assistant is empty or exceeds 120,000 characters.");
-    return { text: content, pageUrl:location.href };
+    const formState=JSON.stringify([...document.querySelectorAll('input:not([type="hidden"]), textarea, select')].map(el=>({id:el.id,name:el.name,value:el.value,checked:el.checked})));
+    return { text: content, pageUrl:location.href, formState };
   }
   if (!/attachment/i.test(identity) && !document.querySelector('[data-attachments], #attachments')) {
     throw new Error("This window is not an identifiable Attachments view.");
@@ -183,12 +203,12 @@ export function readSupportingView(orderNumber, publicOrderId, kind, captureErro
             !a.closest('td.filenameCell') || !a.closest('#tblAttachments, #tblSharedAttachments')) return [];
         const handler = (a.getAttribute('onclick') || '').trim();
         const match = handler.match(/^openAttachment\(\s*(['"])([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\1\s*\)\s*;?\s*(?:this\.style\.color\s*=\s*(['"])purple\3\s*;?)?\s*$/i);
-        if (!match || a.closest('tbody')?.id.toLowerCase() !== match[2].toLowerCase() || !/\.pdf$/i.test(name)) return [];
+        if (!match || a.closest('tbody')?.id.toLowerCase() !== match[2].toLowerCase() || !/\.(pdf|docx?)$/i.test(name)) return [];
         url = new URL(`/AttachmentViewer.aspx?PublicAttachmentId=${encodeURIComponent(match[2])}`, location.origin);
       } else {
         url = new URL(raw, location.href);
       }
-      if (url.origin !== location.origin || url.username || url.password || !/^https?:$/.test(url.protocol) || !/\.pdf(?:$|[?\s])/i.test(name + " " + url.pathname)) return [];
+      if (url.origin !== location.origin || url.username || url.password || !/^https?:$/.test(url.protocol) || !/\.(pdf|docx?)(?:$|[?\s])/i.test(name + " " + url.pathname)) return [];
       return [{name:name || url.pathname.split("/").pop(),url:url.href,pageUrl:location.href}];
     } catch {return [];}
   });
@@ -197,6 +217,23 @@ export function readSupportingView(orderNumber, publicOrderId, kind, captureErro
     if (captureErrors) return {searchFixError: error.message};
     throw error;
   }
+}
+
+// Explicitly authorized TA release action; never edit any field before saving.
+export function saveAndCloseTypingAssistant(expectedPageUrl, expectedFormState, captureErrors = false) {
+  try {
+    if(location.href!==expectedPageUrl || location.origin!=='https://tv.datatracetitle.com' || !/^\/TypingAssistant\.aspx$/i.test(location.pathname))throw Error('Typing Assistant page changed; use Save and Close manually.');
+    const state=JSON.stringify([...document.querySelectorAll('input:not([type="hidden"]), textarea, select')].map(el=>({id:el.id,name:el.name,value:el.value,checked:el.checked})));
+    if(!expectedFormState || state!==expectedFormState)throw Error('Typing Assistant fields changed after reading; use Save and Close manually.');
+    const buttons=document.querySelectorAll('input#btnSaveAndClose[name="btnSaveAndClose"][type="submit"]');
+    const button=buttons.length===1?buttons[0]:null;
+    if(!button || button.value!=='Save and Close' || button.disabled || !button.getClientRects().length || button.closest('[hidden], [aria-hidden="true"]'))throw Error('Typing Assistant Save and Close is unavailable; close it manually using the website.');
+    const form=button.form;
+    const action=new URL(button.getAttribute('formaction') || form?.action || location.href,location.href);
+    if(!form || action.origin!==location.origin || action.username || action.password)throw Error('Typing Assistant save form is not on the expected website.');
+    button.click();
+    return {submitted:true};
+  }catch(error){if(captureErrors)return {searchFixError:error.message};throw error;}
 }
 
 // Only the site's source-navigation links may be opened. Never invoke task,

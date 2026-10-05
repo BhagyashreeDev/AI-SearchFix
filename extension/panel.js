@@ -6,6 +6,7 @@ import { createPageInjector } from "./injection.js";
 import { createActivityLog } from "./activity-log.js";
 
 const $ = id => document.getElementById(id);
+$("brandName").textContent = `SearchFix v${chrome.runtime.getManifest().version}`;
 const settings = { ...DEFAULT_SETTINGS };
 let apiKey = (await chrome.storage.session.get("geminiApiKey")).geminiApiKey || "";
 let busy = false;
@@ -135,18 +136,25 @@ async function openOrder(task) {
 function renderTasks() {
   $("tasks").replaceChildren();taskCards.clear();
   for(const task of discoveredTasks){
-    const card=document.createElement('article');card.className='orderCard';
-    const header=document.createElement('div');header.className='orderHeader';
+    const card=document.createElement('details');card.className='orderCard';
+    const header=document.createElement('summary');header.className='orderHeader';header.title='Expand or collapse order details';
+    const toggle=document.createElement('span');toggle.className='orderToggle';toggle.textContent='▸';toggle.setAttribute('aria-hidden','true');
     const label=document.createElement('button');label.type='button';label.className='orderLink';label.textContent=task.orderNumber || task.name;label.title='Open Order Overview';
-    label.addEventListener('click',()=>run(()=>openOrder(task)));
+    label.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>openOrder(task));});
     const badge=document.createElement('span');badge.setAttribute('role','status');
     const start=document.createElement('button');start.type='button';start.className='primary startAnalysis';start.textContent='Start analysis';start.setAttribute('aria-label',`Start analysis for ${task.orderNumber}`);
-    start.addEventListener('click',()=>run(()=>processTask(task)));
-    header.append(label,badge,start);
-    const content=document.createElement('div');content.className='orderContent';content.hidden=true;
-    const progress=document.createElement('p');progress.className='orderProgress';progress.setAttribute('aria-live','polite');
+    start.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>processTask(task));});
+    header.append(toggle,label,badge,start);
+    const content=document.createElement('div');content.className='orderContent';
+    const progress=document.createElement('p');progress.className='orderProgress';progress.setAttribute('aria-live','polite');progress.textContent='Choose Start analysis to review this order.';
     const findings=document.createElement('div'),documents=document.createElement('div'),actions=document.createElement('div');documents.className='documentProgress';
     content.append(progress,findings,documents,actions);card.append(header,content);$("tasks").append(card);
+    card.addEventListener('click',event=>{
+      // Native summaries and existing controls keep their own actions.
+      if(event.target.closest('button,a,input,textarea,select,summary'))return;
+      if(window.getSelection()?.toString())return;
+      card.open=!card.open;
+    });
     taskCards.set(task.url,{card,badge,content,progress,findings,documents,actions,start});setTaskState(task,'PENDING');
   }
   $("tasksSection").hidden=!discoveredTasks.length;
@@ -188,7 +196,7 @@ $("scan").addEventListener("click", () => run(async () => {
 }));
 async function processTask(task) {
   if(!apiKey){$("apiKeySection").hidden=false;$("toggleApiKey").setAttribute('aria-expanded','true');$("apiKey").focus();throw Error('Add your Gemini API key, then choose Start analysis.');}
-  const row=taskCards.get(task.url);row.content.hidden=false;row.findings.replaceChildren();row.documents.replaceChildren();row.actions.replaceChildren();
+  const row=taskCards.get(task.url);row.card.open=true;row.findings.replaceChildren();row.documents.replaceChildren();row.actions.replaceChildren();
   queueRunner=new QueueRunner({tabs:chrome.tabs,inject,api,settings,log,
     onProgress:message=>{status(message);row.progress.textContent=message;},
     onOrderState:setTaskState,

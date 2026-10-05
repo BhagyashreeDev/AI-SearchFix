@@ -1,4 +1,4 @@
-# SearchFix 1.6.0 implementation
+# SearchFix 1.6.1 implementation
 
 The per-order interface replaces batch start. Clicking an order number reuses the source tab; starting analysis uses the existing isolated reading flow and processes only that task. Other row results remain visible.
 

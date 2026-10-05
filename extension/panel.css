@@ -20,3 +20,5 @@ header{gap:12px;align-items:center}#toggleApiKey{margin-left:auto;font-size:12px
 @media(max-width:380px){main{padding:15px 9px}section{padding:12px 9px}.orderHeader{gap:4px;padding:10px 7px}#tasks .orderHeader button{font-size:11px;padding:7px 5px}.orderHeader .orderStatus{font-size:9px;padding:4px 5px}}
 
 .chosenComment summary::after{content:" ▾";float:right;color:#087c76}.chosenComment[open] summary::after{content:" ▴"}
+
+.orderCard>.orderHeader{display:grid;grid-template-columns:14px minmax(0,1fr) auto auto;list-style:none;cursor:pointer}.orderHeader::-webkit-details-marker{display:none}.orderToggle{color:#087c76;font-size:17px;transition:transform .15s ease}.orderCard[open]>.orderHeader>.orderToggle{transform:rotate(90deg)}.orderCard>.orderHeader:focus-visible{outline:2px solid #087c76;outline-offset:-2px}@media(prefers-reduced-motion:reduce){.orderToggle{transition:none}}
