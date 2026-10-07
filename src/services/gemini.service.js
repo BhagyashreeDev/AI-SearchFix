@@ -118,9 +118,15 @@ export class GeminiService {
                     delay *= 2; // exponential backoff
                 } else {
                     // SDK errors can contain request headers/URLs. Never propagate credentials.
-                    const messages = { 400: "Gemini rejected the key or request. Check your key and model access.", 401: "Gemini rejected this API key.", 403: "This API key does not have permission to use the requested Gemini model.", 404: "A configured Gemini model is unavailable to this API key.", 429: "This API key has reached a Gemini quota or rate limit. Check billing/quota and retry." };
-                    messages[503] = "Gemini is temporarily unavailable (503). Please retry shortly; this does not establish that your API key is invalid.";
-                    const safe = new Error(messages[error.status] || "Gemini request failed. Check the API key, model access, quota, and connection.");
+                    const messages = {
+                        400: "Gemini rejected the key or request. Check your key and model access.",
+                        401: "Gemini rejected this API key.",
+                        403: "This API key does not have permission to use the requested Gemini model.",
+                        404: "A configured Gemini model is unavailable to this API key.",
+                        429: "Gemini model is experiencing high demand or rate limits (429). Please wait a moment and retry.",
+                        503: "Gemini model is temporarily unavailable or experiencing high demand (503). Please retry shortly."
+                    };
+                    const safe = new Error(messages[error.status] || (error.message?.includes("high demand") ? "Gemini model is experiencing high demand. Please retry shortly." : "Gemini request failed. Check the API key, model access, quota, and connection."));
                     safe.code = "GEMINI_REQUEST_FAILED";
                     safe.modelFallbackAllowed = error.status === 404 || Boolean(isRetryable);
                     if (Number.isInteger(error.status)) safe.status = error.status;

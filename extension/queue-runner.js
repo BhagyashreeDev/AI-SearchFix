@@ -66,8 +66,8 @@ export class QueueRunner {
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
         const view = await this.readSource(tab.id, snapshot, kind);
-        if (kind === 'ta' || view.attachments?.length || attempt === 10) {
-          this.log('source.read.complete', {kind,count:view.attachments?.length,characters:view.text?.length});
+        if (kind === 'ta' || kind === 'tasks' || kind === 'exam' || view.attachments?.length || attempt === 10) {
+          this.log('source.read.complete', {kind,count:view.attachments?.length,characters:view.text?.length,tasks:view.tasks?.length});
           return {...view,tabId:tab.id};
         }
       } catch (error) {
@@ -129,8 +129,9 @@ export class QueueRunner {
     const order = validateOrder(snapshot);
     this.log('order.read.complete', {orderNumber:order.orderNumber,count:order.comments.length});
     if (task.orderNumber && task.orderNumber !== order.orderNumber) throw new Error("The loaded order does not match the queue row.");
+    
     this.onProgress(`Analyzing comments for ${order.orderNumber}…`);
-    const step1 = await this.api("analyze-comments", order, true);
+    const step1 = await this.api("analyze-comments", { ...order, availableAttachments: snapshot.attachments || [] }, true);
     if (step1.orderNumber !== order.orderNumber) throw new Error("Comment result belongs to another order.");
     await this.assertUnchanged(tabId, snapshot);
     this.currentAnalysis = step1;
@@ -142,65 +143,170 @@ export class QueueRunner {
     const warnings = [];
     const selected = [];
     let taText = "";
-    // Attachments are collected from the Attachments link only, not Overview.
-    if (required.some(type => type !== "TA")) {
+    let attachmentsList = [];
+    let attachmentsTabId = null;
+
+    // Attachments are collected from the Attachments link when evidence analysis is needed
+    if (required.some(type => type !== "TA") || required.includes("TA")) {
       this.onProgress(`Opening Attachments for ${order.orderNumber}…`);
       try {
         const view = await this.openSource(tabId, snapshot, "attachments");
-        selected.push(...selectEvidenceAttachments(view.attachments, required).map(file=>({...file,tabId:view.tabId})));
-        this.log('attachments.selected', {count:view.attachments.length,selected:selected.map(file=>file.type)});
-      } catch (error) { this.log('source.failed',{kind:'attachments'}); warnings.push(`Attachments: ${error.message}`); }
-    }
-    if (required.includes("TA")) {
-      this.onProgress(`Reading Typing Assistant for ${order.orderNumber}…`);
-      try {
-        const view=await this.openSource(tabId,snapshot,"ta");
-        taText=view.text || "";
-        await this.releaseTA(view);
+        attachmentsList = view.attachments || [];
+        attachmentsTabId = view.tabId;
+        if (required.some(type => type !== "TA")) {
+          selected.push(...selectEvidenceAttachments(attachmentsList, required, step1.issues).map(file => ({ ...file, tabId: view.tabId })));
+          this.log('attachments.selected', { count: attachmentsList.length, selected: selected.map(file => file.type) });
+        }
+      } catch (error) {
+        this.log('source.failed', { kind: 'attachments' });
+        warnings.push(`Attachments: ${error.message}`);
       }
-      catch (error) { this.log('source.failed',{kind:'ta'}); warnings.push(`Typing Assistant: ${error.message}`); }
     }
-    const documents=selected.map(file=>({name:file.name,type:file.type,status:"FOUND"}));
-    if(taText)documents.push({name:"Typing Assistant text",type:"TA",status:"DOWNLOADED"});
-    this.currentDocuments = documents;this.onDocuments(documents);
+
+    if (required.includes("TA")) {
+      // Check if TA is present as .txt in attachments
+      const taAttachment = attachmentsList.find(f => f.isTxt || (/\b(typing\s*assistant|ta)\b/i.test(f.name) && /\.txt$/i.test(f.name)));
+      if (taAttachment && attachmentsTabId) {
+        this.onProgress(`Reading Typing Assistant from attachments for ${order.orderNumber}…`);
+        try {
+          const fresh = await this.readSource(attachmentsTabId, snapshot, "attachments");
+          const downloaded = await this.inject(attachmentsTabId, readAttachment, [taAttachment.url, fresh.pageUrl, {start:true,fileName:taAttachment.name}]);
+          if (downloaded.base64) {
+            taText = new TextDecoder().decode(Uint8Array.from(atob(downloaded.base64), c => c.charCodeAt(0)));
+          }
+        } catch (error) {
+          this.log('ta.attachment.failed', { error: error.message });
+        }
+      }
+
+      // If TA is not in attachments (or reading failed), open external Typing Assistant link
+      if (!taText) {
+        this.onProgress(`Reading Typing Assistant for ${order.orderNumber}…`);
+        try {
+          const view = await this.openSource(tabId, snapshot, "ta");
+          taText = view.text || "";
+          await this.releaseTA(view);
+        } catch (error) {
+          this.log('source.failed', { kind: 'ta' });
+          warnings.push(`Typing Assistant: ${error.message}`);
+        }
+      }
+    }
+
+    // If TYPED_REPORT is required but not present in attachments, fetch from Typing Module (Exam)
+    let typedReportText = "";
+    if (required.includes("TYPED_REPORT")) {
+      const typedAttachment = selected.find(file => file.type === "TYPED_REPORT");
+      if (!typedAttachment) {
+        this.onProgress(`Fetching Typed Report from Typing Module for ${order.orderNumber}…`);
+        let tasksTabId = null;
+        let examTabId = null;
+        try {
+          const tasksView = await this.openSource(tabId, snapshot, "tasks");
+          tasksTabId = tasksView?.tabId;
+          if (tasksView?.typingModuleUrl) {
+            this.log('source.resolve.start', { orderNumber: snapshot.orderNumber, kind: 'exam' });
+            const examTab = await this.tabs.create({ url: tasksView.typingModuleUrl, active: false });
+            examTabId = examTab.id;
+            this.ownedTabs.add(examTab.id);
+            await this.ready(examTab.id);
+
+            let examView = null;
+            for (let attempt = 1; attempt <= 15; attempt++) {
+              try {
+                examView = await this.readSource(examTab.id, snapshot, "exam");
+                if (examView?.previewUrl || (examView?.text && examView.text.length >= 20)) {
+                  break;
+                }
+              } catch (error) {
+                if (attempt === 15 || !/empty|loading|not an identifiable|cannot confirm/i.test(error.message)) {
+                  throw error;
+                }
+              }
+              await this.wait(500);
+            }
+
+            if (examView?.previewUrl) {
+              this.log('exam.docx.selected', { name: examView.docxName, url: examView.previewUrl });
+              selected.push({
+                name: examView.docxName || `${order.orderNumber}_TypedReport.docx`,
+                type: "TYPED_REPORT",
+                url: examView.previewUrl,
+                format: "docx",
+                tabId: examTab.id,
+                source: "exam"
+              });
+            } else if (examView?.text) {
+              typedReportText = examView.text;
+              this.log('source.read.complete', { kind: 'exam', characters: typedReportText.length });
+            }
+          }
+        } catch (error) {
+          this.log('source.failed', { kind: 'exam', error: error.message });
+          warnings.push(`Typed Report (Exam): ${error.message}`);
+        } finally {
+          if (tasksTabId && this.ownedTabs.has(tasksTabId)) {
+            try { await this.tabs.remove(tasksTabId); } catch {}
+            this.ownedTabs.delete(tasksTabId);
+          }
+          if (examTabId && !selected.some(f => f.tabId === examTabId)) {
+            try { await this.tabs.remove(examTabId); } catch {}
+            this.ownedTabs.delete(examTabId);
+          }
+        }
+      }
+    }
+
+    const documents = selected.map(file => ({ name: file.name, type: file.type, status: "FOUND" }));
+    if (taText) documents.push({ name: "Typing Assistant text", type: "TA", status: "DOWNLOADED" });
+    if (typedReportText) documents.push({ name: "Typed Report (Typing Module)", type: "TYPED_REPORT", status: "DOWNLOADED" });
+    this.currentDocuments = documents; this.onDocuments(documents);
     const form = new FormData();
-    form.append("orderData", JSON.stringify({ ...order, analysisId: step1.analysisId, taText }));
+    form.append("orderData", JSON.stringify({ ...order, analysisId: step1.analysisId, taText, typedReportText }));
     let total = 0;
     for (const [index, file] of selected.entries()) {
       try {
-        this.log('pdf.download.start',{fileType:file.type});
-        // Re-check source identity just before fetching evidence.
-        const fresh = await this.readSource(file.tabId, snapshot, "attachments");
-        if (!fresh.attachments.some(a => a.url === file.url)) throw new Error("The attachment listing changed.");
-        let downloaded = await this.inject(file.tabId, readAttachment, [file.url, fresh.pageUrl, {start:true,fileName:file.name}]);
-        const chunks=[];let byteCount=0;const transferId=downloaded.transferId;
-        try{
-          while(true){
-            const chunk=Uint8Array.from(atob(downloaded.base64),c=>c.charCodeAt(0));chunks.push(chunk);byteCount+=chunk.length;
-            if(!transferId || downloaded.done)break;
-            if(downloaded.nextOffset!==byteCount)throw Error('Attachment transfer is incomplete.');
-            downloaded=await this.inject(file.tabId,readAttachment,[file.url,fresh.pageUrl,{id:transferId,offset:downloaded.nextOffset}]);
+        this.log('pdf.download.start', { fileType: file.type });
+        let freshPageUrl = snapshot.pageUrl;
+        if (file.source === "exam") {
+          const fresh = await this.readSource(file.tabId, snapshot, "exam");
+          if (!fresh.previewUrl && (!fresh.text || fresh.text.length < 20)) throw new Error("The Typing Module view changed.");
+          freshPageUrl = fresh.pageUrl;
+        } else {
+          // Re-check source identity just before fetching evidence.
+          const fresh = await this.readSource(file.tabId, snapshot, "attachments");
+          if (!fresh.attachments.some(a => a.url === file.url)) throw new Error("The attachment listing changed.");
+          freshPageUrl = fresh.pageUrl;
+        }
+        let downloaded = await this.inject(file.tabId, readAttachment, [file.url, freshPageUrl, { start: true, fileName: file.name }]);
+        const chunks = []; let byteCount = 0; const transferId = downloaded.transferId;
+        try {
+          while (true) {
+            const chunk = Uint8Array.from(atob(downloaded.base64), c => c.charCodeAt(0)); chunks.push(chunk); byteCount += chunk.length;
+            if (!transferId || downloaded.done) break;
+            if (downloaded.nextOffset !== byteCount) throw Error('Attachment transfer is incomplete.');
+            downloaded = await this.inject(file.tabId, readAttachment, [file.url, freshPageUrl, { id: transferId, offset: downloaded.nextOffset }]);
           }
-          if(downloaded.size!=null && byteCount!==downloaded.size)throw Error('Attachment transfer is incomplete.');
-        }finally{if(transferId)await this.inject(file.tabId,readAttachment,[file.url,fresh.pageUrl,{id:transferId,release:true}]).catch(()=>{});}
+          if (downloaded.size != null && byteCount !== downloaded.size) throw Error('Attachment transfer is incomplete.');
+        } finally { if (transferId) await this.inject(file.tabId, readAttachment, [file.url, freshPageUrl, { id: transferId, release: true }]).catch(() => {}); }
         const mimeType = downloaded.mimeType || "application/pdf";
-        if (!["application/pdf","application/msword","application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(mimeType)) throw new Error("Unsupported attachment format.");
+        if (!["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"].includes(mimeType)) throw new Error("Unsupported attachment format.");
         total += byteCount;
-        documents[index].status="DOWNLOADED";this.onDocuments(documents);
-        this.log('pdf.download.complete',{fileType:file.type,bytes:byteCount});
+        documents[index].status = "DOWNLOADED"; this.onDocuments(documents);
+        this.log('pdf.download.complete', { fileType: file.type, bytes: byteCount });
         form.append(`file${index}`, new Blob(chunks, { type: mimeType }), file.name);
         form.append(`fileType_file${index}`, file.type);
-      } catch (error) { documents[index].status="FAILED";this.onDocuments(documents);this.log('pdf.download.failed',{fileType:file.type,errorCode:error.code,httpStatus:error.httpStatus}); warnings.push(`${file.name}: ${error.message}`); }
+      } catch (error) { documents[index].status = "FAILED"; this.onDocuments(documents); this.log('pdf.download.failed', { fileType: file.type, errorCode: error.code, httpStatus: error.httpStatus }); warnings.push(`${file.name}: ${error.message}`); }
     }
     await this.assertUnchanged(tabId, snapshot);
     this.onProgress(`Analyzing evidence for ${order.orderNumber}…`);
-    this.log('evidence.submit',{bytes:total,characters:taText.length,missing:required.filter(type=>type==='TA'?!taText:![...form.entries()].some(([key,value])=>key.startsWith('fileType_')&&value===type))});
+    this.log('evidence.submit', { bytes: total, characters: taText.length, missing: required.filter(type => type === 'TA' ? !taText : ![...form.entries()].some(([key, value]) => key.startsWith('fileType_') && value === type)) });
     // Empty evidence is deliberately submitted so missing files yield REVIEW_REQUIRED.
-    for(const doc of documents)if(doc.status==="DOWNLOADED")doc.status="ANALYZING";
+    for (const doc of documents) if (doc.status === "DOWNLOADED") doc.status = "ANALYZING";
     this.onDocuments(documents);
     const result = await this.api("analyze-documents", form);
     if (result.orderNumber !== order.orderNumber) throw new Error("Evidence result belongs to another order.");
-    result.documents = documents.map(doc => (result.documents || []).find(item => item.name === doc.name && item.type === doc.type) || {...doc,status:doc.status === "FAILED" ? "FAILED" : "UNVERIFIED"});
+    result.documents = documents.map(doc => (result.documents || []).find(item => item.name === doc.name && item.type === doc.type) || { ...doc, status: doc.status === "FAILED" ? "FAILED" : "UNVERIFIED" });
     await this.assertUnchanged(tabId, snapshot);
     if (warnings.length) return this.review(order.orderNumber, warnings.join("\n"), result);
     return result;

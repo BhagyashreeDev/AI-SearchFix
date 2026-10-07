@@ -2,7 +2,7 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SearchFix Assistant</title><link rel="stylesheet" href="panel.css"></head>
 <body>
-  <header><div class="brand">SF<span id="brandName">SearchFix</span></div><button id="toggleApiKey" class="primary" hidden aria-expanded="false" aria-controls="apiKeySection">Add Gemini API key</button></header>
+  <header><div class="brand"><div class="logoBadge">SF</div><span id="brandName">SearchFix</span></div><button id="toggleApiKey" class="primary" hidden aria-expanded="false" aria-controls="apiKeySection">Add Gemini API key</button></header>
   <main>
     <section id="apiKeySection" hidden>
       <h2>Gemini API key</h2>
@@ -13,12 +13,12 @@
       </form>
       <p id="apiKeyStatus" class="hint" role="status"></p>
     </section>
-    <p class="eyebrow">READ-ONLY ORDER REVIEW</p><h1>SearchFix orders</h1>
+    <h1>SearchFix orders</h1>
     <p class="intro">Open the task queue, then scan to find the SearchFix orders on the page.</p>
     <div class="actions"><button id="scan" class="primary">Scan the page</button></div>
     <p id="status" role="status" aria-live="polite">Ready to scan. No orders have been read yet.</p>
     <section id="tasksSection" hidden><div class="sectionHeading"><h2>SearchFix orders</h2><span id="orderCount" class="hint"></span></div><p class="hint">Load all desired queue rows before scanning. Click an order number to open its overview, or Start analysis to review that order. Keep this panel open during analysis.</p><div id="tasks"></div></section>
     <details id="activitySection" hidden><summary>Activity log</summary><p class="hint">Shows the steps completed and where processing failed. API keys and document contents are excluded. Only the latest 1,500 entries are kept while this panel is open.</p><button id="copyActivity">Copy activity log</button><pre id="activityLog" aria-live="off"></pre></details>
-    <footer>Viewing only · No task claiming · No order changes</footer>
+    <footer>© Invicto Labs Inc.</footer>
   </main><script type="module" src="panel.js"></script>
 </body></html>

@@ -1,41 +1,124 @@
-# SearchFix 1.6.1
+# SearchFix AI (v2.0.0)
 
-Read-only SearchFix review: Chrome reads the signed-in DataTrace pages and sends current comments and selected evidence to the configured analysis service. It never posts comments, edits order fields or claims tasks. After reading an unchanged Typing Assistant window opened by the extension, it uses the website's Save and Close button. If saving cannot finish, that window stays open for manual attention.
+SearchFix AI is an automated, evidence-based title examination review assistant for DataTrace. It pairs a Manifest V3 Chrome Extension with a high-performance Node.js / Google Gemini backend to evaluate customer order comments, identify claimed title discrepancies, dynamically determine and inspect required supporting documents, and produce cited, evidence-backed decisions (`ACCEPTED`, `DISPUTED`, or `REVIEW_REQUIRED`).
 
-## Use
+---
 
-1. Load or reload the extension folder in chrome://extensions.
-2. Open the DataTrace task queue and click **Scan the page**.
-3. Save your key with **Add Gemini API key**. Saving makes no Gemini test request. The key lasts for this browser session; there is no environment-key fallback.
-4. Click an order number to open its Overview in the same original browser tab.
-5. Click **Start analysis** beside the chosen order. Only that order runs. Keep the panel open.
-6. Click the arrow, order row or detail text to expand/collapse its details; findings remain available when reopened. The order-number link still opens Overview. Expand **Chosen comment** to see the original text, AI selection explanation and author interpretation. Read findings, document names and recommended next steps below it.
+## 📁 Project Structure & Folder Roles
 
-## Analysis
+```
+SearchFix/
+├── extension/          # Manifest V3 Chrome Extension (Frontend)
+├── src/                # Express & Google Gemini AI Backend
+│   ├── config/         # Model fallbacks, runtime config, and document types
+│   ├── controllers/    # API controllers for comment & document analysis
+│   ├── prompts/        # Global Document Knowledge Base and AI system prompts
+│   ├── routes/         # Express REST API endpoints
+│   ├── schemas/        # Zod validation schemas for requests, responses & evidence
+│   ├── services/       # AI classification, document analysis, evidence & decision engines
+│   └── utils/          # Normalization, validation, and error helpers
+├── tests/              # Comprehensive test suite (unit, integration, browser mocks)
+├── config/             # Gemini API rate limits and model parameters
+├── data/               # Ephemeral runtime cache and active analysis sessions
+├── scripts/            # Build, setup, and backend configuration scripts
+├── package.json        # Dependencies and test runner scripts
+└── README.md           # Project documentation
+```
 
-All visible Overview comments are sent to the backend. The backend sorts them chronologically and sends only the latest 15 to AI. AI chooses the relevant comment and interprets the author: ADS generally indicates internal and Outsource generally indicates client. Mixed names are decided from context by AI; code does not choose a comment using names or keywords.
+### Folder Responsibilities:
+* **`extension/`**: Contains the unpacked Chrome Extension. Handles read-only scanning of the DataTrace order queue, reading comments, scanning available attachments manifests, fetching document chunks, and rendering the live side panel UI.
+* **`src/`**: The core AI analysis service.
+  * **`src/prompts/documentKnowledge.js`**: Houses the **Global Document Knowledge Base** (the standardized ontology of all 20 title examination document types).
+  * **`src/services/issueClassification.service.js`**: Selects the active client comment, identifies author role (Internal vs. Client), and classifies issues.
+  * **`src/services/documentSelection.service.js`**: Dynamically chooses required evidence documents based on the claim and global document knowledge (eliminating hardcoded mapping tables).
+  * **`src/services/documentAnalysis.service.js`**: Handles deep PDF and Word document inspection, OCR text parsing, and factual finding extraction.
+  * **`src/services/decision.service.js`**: Synthesizes cited evidence against the client claim to produce the final verdict.
+* **`tests/`**: Contains 110+ automated test suites testing every stage of the pipeline (comment selection, document support, PDF chunking, TA lifecycle, key safety, and API resilience).
+* **`scripts/`**: Automation scripts to configure backend host URLs (`configure-backend.mjs`) and hash keys.
 
-- AI-selected internal comment: **Ignored**, with no document analysis.
-- Client operational task (fee approval, rush ETA, abstractor follow-up, new work): **Accepted**, with a next action and no document analysis. This acknowledges a task; it does not establish a past error.
-- Alleged discrepancy: mapped evidence is requested and reviewed. **Accepted** means current evidence supports the complaint; **Disputed** means it contradicts it.
-- Unclear selection, unsupported issue, missing or inconclusive evidence, failed download or model failure: **Review required**.
+---
 
-The chosen comment appears before document collection. Document progress distinguishes Found, Downloaded, Sent for analysis, Analyzed, Could not verify and Download failed. Analyzed means the model returned evidence attributed to that supplied source, not that every assertion in the file was independently verified.
+## 🧠 Dynamic Document Selection & Global Document Knowledge
 
-No historical workbook, PDF or JSON reference library is used or bundled. Prompts contain general document-role guidance learned from the supplied examples, without sample names, order facts or outcomes. Current-order PDFs remain the evidence. Source text is untrusted data, never instructions.
+Previous versions used static, hardcoded issue-to-document lookup tables. In production, title orders vary widely, and filenames or document types in county records are non-standard.
 
-## Existing boundaries
+SearchFix 2.0 replaces hardcoded mappings with **AI-Driven Dynamic Selection** guided by a comprehensive **Global Document Knowledge Base**:
 
-PDF, DOC and DOCX attachments are fetched from the matched order's Attachments view using the current browser session; no PDF-toolbar selector or Ctrl+S is needed. TA is read from the website's Typing Assistant link. The actual Typed Report attachment is a separate source, created from TA; issues requiring a Typed Report compare both. Filename prefixes and attachment row order may vary. All comments are already visible on Overview; there is no automatic pagination.
+### The 20 Standardized Title Examination Document Types:
+1. **`TA` (Typing Assistant)**: Raw draft / rough notes prepared by the typing team (`.txt` format).
+2. **`TYPED_REPORT`**: The standardized, finalized Title Search Report created from TA data.
+3. **`SEARCH_PACKAGE`**: Scanned bundle of official recorded instruments (Deeds, Mortgages, Releases, Assignments, etc.).
+4. **`TAX`**: Municipal/County tax overview, tax bills, and commercial tax certificates (e.g., TaxSource).
+5. **`PA`**: County Property Assessor card (PRC / Beacon / Schneider) with physical specs and valuations.
+6. **`THR`**: Transaction History Report (DataTree / TitleFlex) with historical title transfer chains.
+7. **`INDEX`**: County Clerk / Recorder index sheets and Title Plant name runs (TitleVision / DataSource).
+8. **`ATTORNEY_OPINION`**: Formal Attorney Title Opinion (ATO) / Title Certification signed by a licensed attorney.
+9. **`LEGAL_DESCRIPTION`**: Standalone Exhibit A boundary description (metes-and-bounds or platted lot/block).
+10. **`VENDOR_MANAGEMENT`**: Client order instructions and requirements (Doma request forms, custom codes like LN1070).
+11. **`LIEN`**: Municipal/County court searches for civil judgments, lawsuits, small claims, and tax warrants (Doxpop, Odyssey).
+12. **`PACER`**: Federal bankruptcy court search reports (Chapter 7, 11, 13).
+13. **`PATRIOT`**: US Treasury OFAC Patriot Act anti-terrorism and sanctions search reports.
+14. **`MAP`**: Visual GIS parcel maps, tax maps, and recorded subdivision plat maps.
+15. **`CHECKLIST`**: Standard "No Open Mortgage Checklist" and marked-up search indexes.
+16. **`PROPERTY_REPORT`**: Title bring-down / date-down update reports (e.g., Vylla Update Report).
+17. **`HOA_DOCUMENT`**: Homeowners Association declarations, bylaws, or CC&R restrictions.
+18. **`LIEN_REGISTRY`**: Dedicated state/county lien registry search records.
+19. **`COVER_SHEET`**: Abstractor search cover notes and title summary sheets.
+20. **`COST_WORKSHEET`**: Internal abstractor search fee and invoice worksheets (DTNP).
 
-There is no application cap on attachment count, individual file size or total upload size. Browser downloads transfer in small chunks. PDFs are analyzed in batches covering all pages, with citations restored to original page numbers. Word documents use extracted text, including headers, notes and text boxes; embedded images and page layout cannot be verified from this extraction. Unreadable or incomplete evidence requires review. Machine resources, Gemini quotas and provider PDF limits still apply; an exceptionally large single page may need compression. Each extension request waits up to five minutes. Batching does not guarantee an arbitrarily large order will finish within that time.
+---
 
-Deeds and deeds of trust are checked inside Search Package; DEED and DOT are not standalone requested document types. Other missing mapped sources are also sought there, except TA and Typed Report, which must remain separate. When no Search Package is listed, Property Report is used as the candidate bundle (including MD/NV). The current implementation reads package pages included in that report; it does not follow links or extract embedded files from it. A matching filename alone does not satisfy a missing type: the model must identify its contents with a quote and source citation. Otherwise the order requires review.
+## ⚡ Core Workflow & Key Logic Enhancements
 
-Results stay in panel memory. Saved backend analysis sessions expire after 30 minutes or restart; the document stage reuses the chosen comment and rejects changed order/comment context. Key saving, model fallbacks, rate limits and website access behavior are otherwise unchanged.
+```mermaid
+flowchart TD
+    A["Extension Scans Order Page"] --> B["Step 1: AI Analyzes Comments + Attachment Manifest"]
+    B --> C{"Is Comment Internal or Task?"}
+    C -->|Internal| D["Mark IGNORED (No docs opened)"]
+    C -->|Operational Task| E["Mark ACCEPTED (Task acknowledged)"]
+    C -->|Discrepancy / Claim| F{"Is it a Missing Doc Claim?<br/>(e.g. Missed PACER)"}
+    F -->|Doc is in Attachments| G["Direct Decision: DISPUTED<br/>(Doc already attached)"]
+    F -->|Doc is NOT in Attachments| H["Direct Decision: ACCEPTED<br/>(Doc was missed)"]
+    F -->|Requires Content Analysis| I["Step 2: AI Selects Required Docs Dynamically"]
+    I --> J{"Is TA in Attachments?<br/>(.txt in Attachment Viewer)"}
+    J -->|Yes| K["Read TA directly from Attachments"]
+    J -->|No| L["Safely open Typing Assistant popup & Save/Close"]
+    I --> M["Download Most Recent Document Versions<br/>(Recency deduplication)"]
+    K --> N["Step 3: Backend Gemini Evidence Analysis"]
+    L --> N
+    M --> N
+    N --> O["Final Verdict: ACCEPTED / DISPUTED / REVIEW REQUIRED<br/>+ Cited Evidence, Quotes & Page Numbers"]
+```
 
-Active comment models: gemini-3.5-flash-lite then gemini-3.1-flash-lite. Active document and decision models: gemini-3.5-flash then gemini-3.5-flash-lite then gemini-3.1-flash-lite. See RATE_LIMITS.md for budget behavior. Model availability still depends on the supplied account.
+### Key Logic Features:
+1. **Attachment-First TA Reading**:
+   * TA is checked in the order's attachments first (in `.txt` format).
+   * The extension **only** navigates to the external Typing Assistant tool link if the TA is **not attached**, minimizing risk and popup interactions.
+2. **Recency & Deduplication Rule**:
+   * When multiple versions of a search package or report exist, SearchFix automatically selects the **most recent version** based on upload timestamps and date stamps in filenames.
+3. **Missing Attachment Claim Verification**:
+   * For client comments claiming missed files (*"Missed to attach PACER"*, *"Tax bill missing"*), the system verifies the attachment manifest directly. If attached, it disputes the claim; if absent, it accepts the error.
+4. **Resilient Matching**:
+   * Uses contextual understanding rather than rigid exact string matching to locate documents despite non-standard naming across counties.
 
-## Run and verify
+---
 
-The extension currently targets https://searchfix-deployment.onrender.com. Local changes do not update Render automatically. Backend and extension must both use this release to receive the new behavior. See SETUP_AND_UPDATES.md and LOCAL_TESTING.md. Automated tests and the preview use synthetic model responses and establish software behavior, not live AI accuracy.
+## 🚀 Setup & Local Execution
+
+### 1. Run the Backend
+```bash
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+
+# Run all automated tests
+npm test
+```
+
+### 2. Load the Chrome Extension
+1. Open Chrome and navigate to `chrome://extensions`.
+2. Enable **Developer mode** (top-right toggle).
+3. Click **Load unpacked** and select the `SearchFix/extension` directory.
+4. Open the DataTrace task queue, open the SearchFix side panel, and click **Scan the page**.

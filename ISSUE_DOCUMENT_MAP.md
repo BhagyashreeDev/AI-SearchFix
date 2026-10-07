@@ -1,10 +1,21 @@
-# Issue and document catalogue
+# Document Knowledge Base & Issue-to-Evidence Architecture
 
-Existing mappings are preserved. AI chooses a concrete discrepancy type; code maps it to the required evidence. Unknown claims require manual classification. Operational tasks use the separate Accepted route without document requests.
+SearchFix employs a **Global Document Knowledge Base** (see [`src/prompts/documentKnowledge.js`](file:///d:/Downloads/SearchFix%203/SearchFix/src/prompts/documentKnowledge.js)) combined with **Pre-Analysis Attachment Manifest Scanning** to dynamically select required evidence for each client comment without relying strictly on static lookup tables.
 
-TA is website Typing Assistant text. TYPED_REPORT is the separate report attachment created from TA; both are required for mapped report issues. Sources may be PDF, DOC or DOCX. Deed and deed-of-trust evidence comes from SEARCH_PACKAGE, never separate DEED/DOT requests. Other missing types may be verified from cited Search Package contents (or included package pages in Property Report for MD/NV). TA and TYPED_REPORT cannot be substituted by a bundle. Missing or unverified evidence requires review.
+## Dynamic AI Selection Flow
+1. **Attachment Scan First**: The extension scans all files attached to the order and builds an `availableAttachments` manifest before requesting comment analysis.
+2. **Context-Aware Dynamic Requesting**: Gemini 2.5 Flash Lite analyzes the client comment in the context of the available order attachments and the global 20-category Title Search ontology.
+3. **Missing Attachment Claims Resolution**:
+   - If a client claims a missing file (e.g., *"Missed to attach pacer"*) and the file is present in the attachment manifest $\rightarrow$ immediately resolves to **`DISPUTED`**.
+   - If the claimed file is truly missing from the attachments $\rightarrow$ immediately resolves to **`ACCEPTED`**.
+4. **Dynamic Evidence Specification**: For issues requiring document analysis, the AI returns the exact required document categories (`requiredDocuments`) and specific matching filenames from the manifest (`targetAttachmentNames`).
+5. **Recency Priority**: When multiple packages/reports are present, the newest version (by date or version suffix) is automatically chosen.
+6. **Typing Assistant vs Typed Report**: TA draft text (`.txt` in attachments) is checked first before opening the external Typing Assistant tool.
 
-| Issue type | Required document types |
+## Legacy & Fallback Issue Catalog
+The table below serves as a deterministic fallback when dynamic document requirements are omitted:
+
+| Issue type | Fallback required document types |
 | --- | --- |
 | MISSING_DEED | SEARCH_PACKAGE, TYPED_REPORT, TA |
 | CHAIN_BREAK | SEARCH_PACKAGE, TYPED_REPORT, TA |

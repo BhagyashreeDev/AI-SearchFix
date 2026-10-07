@@ -2,7 +2,7 @@ import {attachmentFormat} from '../services/documentSources.service.js';
 import {missingEvidenceTypes} from '../services/evidenceCoverage.service.js';
 import fs from "fs";
 import { issueClassificationService } from "../services/issueClassification.service.js";
-import { documentSelectionService } from "../services/documentSelection.service.js";
+import { documentSelectionService, guessDocumentType } from "../services/documentSelection.service.js";
 import { documentAnalysisService } from "../services/documentAnalysis.service.js";
 import { evidenceService } from "../services/evidence.service.js";
 import { decisionEngine } from "../services/decision.service.js";
@@ -14,20 +14,40 @@ import { trace } from '../services/trace.service.js';
 
 
 // The model selects a comment from the recent window before any document routing.
-async function routeComments(comments) {
-    const route = await issueClassificationService.analyzeComments(comments);
+async function routeComments(comments, availableAttachments = []) {
+    const route = await issueClassificationService.analyzeComments(comments, availableAttachments);
     if (route.terminal) return route;
-    return {...route,issues:documentSelectionService.selectRequiredDocuments(route.issues)};
+    return {...route, issues: documentSelectionService.selectRequiredDocuments(route.issues, availableAttachments)};
 }
 function terminalPayload(route, orderNumber, analysisId) {
-    return {analysisId,orderNumber,commentAnalysis:route.commentAnalysis,issues:[],documents:[],
-        status:route.terminal,overallDecision:route.terminal,reason:route.reason,
-        nextSteps:route.nextSteps || [],decisionBasis:route.decisionBasis};
+    const formattedIssues = (route.issues || []).map(issue => ({
+        issueType: issue.issueType,
+        category: issue.category,
+        claim: issue.claim,
+        decision: issue.decision,
+        reason: issue.reason,
+        requiredFiles: (issue.requiredDocuments || []).map(docType => ({
+            fileType: docType,
+            reason: `Required to investigate ${issue.issueType.toLowerCase().replace(/_/g, " ")} claim.`
+        }))
+    }));
+    return {
+        analysisId,
+        orderNumber,
+        commentAnalysis: route.commentAnalysis,
+        issues: formattedIssues,
+        documents: [],
+        status: route.terminal,
+        overallDecision: route.terminal,
+        reason: route.reason,
+        nextSteps: route.nextSteps || [],
+        decisionBasis: route.decisionBasis
+    };
 }
 
 export async function analyzeCommentsController(req, res) {
     try {
-        const { orderNumber, comments } = req.body || {};
+        const { orderNumber, comments, availableAttachments } = req.body || {};
 
         if (!orderNumber || typeof orderNumber !== "string" || orderNumber.trim() === "") {
             return res.status(400).json({ error: "orderNumber is required and must be a non-empty string." });
@@ -38,12 +58,12 @@ export async function analyzeCommentsController(req, res) {
         }
 
         const cleanOrderNumber = orderNumber.trim();
-        if (!OrderInputSchema.safeParse({orderNumber: cleanOrderNumber, comments}).success) {
+        if (!OrderInputSchema.safeParse({orderNumber: cleanOrderNumber, comments, availableAttachments}).success) {
             return res.status(400).json({error: "Each comment must contain non-empty text and valid string metadata."});
         }
         console.log(`[SearchFix Step 1] Analyzing comments for Order ${cleanOrderNumber} (${comments.length} comments)`);
 
-        const route = await routeComments(comments);
+        const route = await routeComments(comments, availableAttachments || []);
         trace('comments.routed',{status:route.terminal || 'AWAITING_DOCUMENTS',required:[...new Set((route.issues || []).flatMap(issue=>issue.requiredDocuments))]});
         const analysisId = saveAnalysis(cleanOrderNumber, comments, route);
         if (route.terminal) return res.status(200).json(SearchFixStep1ResultSchema.parse(terminalPayload(route, cleanOrderNumber, analysisId)));
@@ -55,10 +75,14 @@ export async function analyzeCommentsController(req, res) {
             claim: issue.claim,
             decision: issue.decision,
             reason: issue.reason,
-            requiredFiles: issue.requiredDocuments.map(docType => ({
-                fileType: docType,
-                reason: `Required to investigate ${issue.issueType.toLowerCase().replace(/_/g, " ")} claim.`
-            }))
+            requiredFiles: issue.requiredDocuments.map(docType => {
+                const matchedFile = documentSelectionService.findBestAttachmentForType(docType, availableAttachments || []);
+                return {
+                    fileType: docType,
+                    fileName: matchedFile || (docType === "TYPED_REPORT" ? "TYPED REPORT" : docType === "TA" ? "TYPING ASSISTANT" : undefined),
+                    reason: `Required to investigate ${issue.issueType.toLowerCase().replace(/_/g, " ")} claim.`
+                };
+            })
         }));
 
         const step1Payload = {
@@ -110,6 +134,7 @@ export async function analyzeDocumentsController(req, res) {
         const comments = bodyData.comments || req.body.comments;
         const analysisId = bodyData.analysisId || req.body.analysisId;
         const taText = bodyData.taText || "";
+        const typedReportText = bodyData.typedReportText || "";
 
         if (!orderNumber || typeof orderNumber !== "string" || orderNumber.trim() === "") {
             return res.status(400).json({ error: "orderNumber is required." });
@@ -119,8 +144,8 @@ export async function analyzeDocumentsController(req, res) {
             return res.status(400).json({ error: "comments array must contain at least one comment." });
         }
 
-        if (!OrderInputSchema.safeParse({orderNumber, comments}).success || typeof taText !== "string" || taText.length > 120000) {
-            return res.status(400).json({error: "Invalid comment data or TA text (maximum 120,000 characters)."});
+        if (!OrderInputSchema.safeParse({orderNumber, comments}).success || typeof taText !== "string" || taText.length > 120000 || typeof typedReportText !== "string" || typedReportText.length > 250000) {
+            return res.status(400).json({error: "Invalid comment data or text payloads (exceeds character limits)."});
         }
 
         const cleanOrderNumber = orderNumber.trim();
@@ -139,20 +164,8 @@ export async function analyzeDocumentsController(req, res) {
                 let fileType = "SEARCH_PACKAGE";
                 if (req.body[`fileType_${file.fieldname}`]) {
                     fileType = req.body[`fileType_${file.fieldname}`];
-                } else if (/PROPERTY[ _-]*(?:VIEW[ _-]*)?REPORT/i.test(file.originalname)) {
-                    fileType = "PROPERTY_REPORT";
-                } else if (file.originalname.toUpperCase().includes("INDEX")) {
-                    fileType = "INDEX";
-                } else if (file.originalname.toUpperCase().includes("TAX")) {
-                    fileType = "TAX";
-                } else if (file.originalname.toUpperCase().includes("PACER")) {
-                    fileType = "PACER";
-                } else if (file.originalname.toUpperCase().includes("PATRIOT")) {
-                    fileType = "PATRIOT";
-                } else if (file.originalname.toUpperCase().includes("REPORT") || file.originalname.toUpperCase().includes("TYPED")) {
-                    fileType = "TYPED_REPORT";
-                } else if (file.originalname.toUpperCase().includes("THR")) {
-                    fileType = "THR";
+                } else {
+                    fileType = guessDocumentType(file.originalname) || "SEARCH_PACKAGE";
                 }
                 if (!DOCUMENT_TYPES.includes(fileType)) return res.status(400).json({error:"Invalid attachment document type."});
 
@@ -165,7 +178,8 @@ export async function analyzeDocumentsController(req, res) {
             }
         }
         if (taText.trim()) uploadedFiles.push({fileName:"Typing Assistant text", fileType:"TA", inlineText:taText.trim()});
-        trace('evidence.received',{count:(req.files || []).length,bytes:(req.files || []).reduce((n,f)=>n+(f.size || 0),0),characters:taText.length});
+        if (typedReportText.trim()) uploadedFiles.push({fileName:"Typed Report (Typing Module)", fileType:"TYPED_REPORT", inlineText:typedReportText.trim()});
+        trace('evidence.received',{count:(req.files || []).length,bytes:(req.files || []).reduce((n,f)=>n+(f.size || 0),0),characters:taText.length + typedReportText.length});
 
         // Stage 4-6: PDF Document Analysis, Evidence Extraction & Decision Engine
         const processedIssues = [];
@@ -180,10 +194,10 @@ export async function analyzeDocumentsController(req, res) {
             trace('evidence.analysis.start',{issueType:issue.issueType,required:issue.requiredDocuments});
             const rawEvidence = await documentAnalysisService.analyzeDocumentsForIssue(issue, uploadedFiles);
             const formattedEvidence = evidenceService.formatEvidence(rawEvidence);
-            const missing = missingEvidenceTypes(issue.requiredDocuments, uploadedFiles, formattedEvidence);
+            const missing = missingEvidenceTypes(issue.requiredDocuments, uploadedFiles, formattedEvidence, issue);
             missingRequiredEvidence ||= missing.length > 0;
             trace('evidence.analysis.complete',{issueType:issue.issueType,count:formattedEvidence.length,missing});
-            const { decision, reason, nextSteps = [] } = missing.length
+            const { decision, reason, nextSteps = [], commentSuggestion = '' } = missing.length
                 ? { decision: "REVIEW_REQUIRED", reason: `Required evidence was not supplied: ${missing.join(", ")}. Review the order's Attachments and Typing Assistant.`, nextSteps: [`Obtain and verify ${missing.join(", ")} before resolving this claim.`] }
                 : await decisionEngine.evaluateIssueDecision(issue, formattedEvidence);
             trace('decision.complete',{issueType:issue.issueType,status:decision});
@@ -196,6 +210,7 @@ export async function analyzeDocumentsController(req, res) {
                 evidence: formattedEvidence,
                 decision,
                 reason,
+                commentSuggestion,
                 nextSteps
             });
         }

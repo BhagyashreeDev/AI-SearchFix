@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, buildAssistantText } from "./core.js";
+import { DEFAULT_SETTINGS, buildAssistantText, suggestedComment } from "./core.js";
 import { readOrderPage } from "./page-reader.js";
 import { QueueRunner } from "./queue-runner.js";
 import { createApiClient, normalizeApiKey } from "./api-client.js";
@@ -114,6 +114,19 @@ function showAnalysis(row,result) {
     row.findings.append(block);
   }
   if(result.nextSteps?.length)row.findings.append(section('Next steps',result.nextSteps.map((step,i)=>`${i+1}. ${step}`).join('\n'),'nextSteps'));
+  const suggestion=suggestedComment(result);
+  if(suggestion){
+    const box=document.createElement('details');box.className='commentSuggestion';
+    box.addEventListener('click',event=>event.stopPropagation());
+    const heading=document.createElement('summary');heading.textContent='Comment suggestion';box.append(heading);
+    const note=document.createElement('p');note.className='hint';
+    note.textContent=suggestion.needsCompletion?'Completion draft: use only after completing and verifying the correction.':'Review this draft before copying it to your spreadsheet.';
+    if(suggestion.hasPendingReview)note.textContent+=' Other items still require review; this note covers only resolved findings.';
+    const text=document.createElement('textarea');text.setAttribute('aria-label','Suggested spreadsheet comment');text.rows=6;text.value=suggestion.text;
+    const copy=document.createElement('button');copy.type='button';copy.textContent='Copy comment';
+    copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(text.value);copy.textContent='Copied';}catch{copy.textContent='Select the comment and copy manually';}});
+    box.append(note,text,copy);row.findings.append(box);
+  }
   if(result.documents)showDocuments(row,result.documents);
 }
 function showDocuments(row,documents) {
@@ -139,12 +152,27 @@ function renderTasks() {
     const card=document.createElement('details');card.className='orderCard';
     const header=document.createElement('summary');header.className='orderHeader';header.title='Expand or collapse order details';
     const toggle=document.createElement('span');toggle.className='orderToggle';toggle.textContent='▸';toggle.setAttribute('aria-hidden','true');
+    const orderCol=document.createElement('div');orderCol.className='orderCol';
     const label=document.createElement('button');label.type='button';label.className='orderLink';label.textContent=task.orderNumber || task.name;label.title='Open Order Overview';
     label.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>openOrder(task));});
+    orderCol.append(label);
+
+    const metaParts = [];
+    if (task.state) metaParts.push(`State: ${task.state}`);
+    if (task.county) metaParts.push(task.county);
+    if (task.arrivalTime) metaParts.push(`Arrived: ${task.arrivalTime}`);
+
+    if (metaParts.length > 0) {
+      const meta = document.createElement('div');
+      meta.className = 'orderMeta';
+      meta.textContent = metaParts.join(' · ');
+      orderCol.append(meta);
+    }
+
     const badge=document.createElement('span');badge.setAttribute('role','status');
     const start=document.createElement('button');start.type='button';start.className='primary startAnalysis';start.textContent='Start analysis';start.setAttribute('aria-label',`Start analysis for ${task.orderNumber}`);
     start.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>processTask(task));});
-    header.append(toggle,label,badge,start);
+    header.append(toggle,orderCol,badge,start);
     const content=document.createElement('div');content.className='orderContent';
     const progress=document.createElement('p');progress.className='orderProgress';progress.setAttribute('aria-live','polite');progress.textContent='Choose Start analysis to review this order.';
     const findings=document.createElement('div'),documents=document.createElement('div'),actions=document.createElement('div');documents.className='documentProgress';
@@ -166,11 +194,16 @@ async function scan() {
   const tab = await currentTab();
   sourceTabId = tab.id;
   const data = await inject(tab.id, readOrderPage, [settings]);
+  if(data.scanDiagnostics){
+    log('scan.tables',{count:data.scanDiagnostics.queueTables});
+    log('scan.rows',{count:data.scanDiagnostics.searchFixRows,missing:data.scanDiagnostics.missingOverviewLinks});
+  }
   discoveredTasks = [...new Map(data.tasks.map(task=>[task.url,task])).values()];
   renderTasks();
   log('scan.complete', {count:discoveredTasks.length});
   $("toggleApiKey").hidden = false;
-  status(discoveredTasks.length ? `Found ${discoveredTasks.length} SearchFix orders. Choose Start analysis beside the order you want to review.` : "No SearchFix orders found on this page. Open All Active and Available Tasks, load the desired rows, and scan again.");
+  const skipped=data.scanDiagnostics?.missingOverviewLinks || 0;
+  status(discoveredTasks.length ? `Found ${discoveredTasks.length} SearchFix orders. Choose Start analysis beside the order you want to review.${skipped?` ${skipped} additional rows have no readable Order Overview link.`:''}` : skipped ? `Found ${skipped} SearchFix rows, but their Order Overview links could not be read. Copy the activity log for troubleshooting.` : "No SearchFix orders found on this page. Open All Active and Available Tasks, load the desired rows, and scan again.");
   return data;
 }
 async function navigate(url) {

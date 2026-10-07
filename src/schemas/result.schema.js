@@ -11,6 +11,7 @@ const DocumentProgressSchema=z.object({name:z.string(),type:z.string(),status:z.
 
 export const RequiredFileItemSchema = z.object({
     fileType: z.enum(DOCUMENT_TYPES),
+    fileName: z.string().optional(),
     reason: z.string()
 });
 
@@ -18,7 +19,7 @@ export const Step1IssueSchema = z.object({
     category: z.string().optional(),
     issueType: z.enum(ISSUE_TYPES),
     claim: z.string(),
-    decision: z.literal('DISPUTED').optional(),
+    decision: z.enum(['ACCEPTED', 'DISPUTED', 'REVIEW_REQUIRED']).optional(),
     reason: z.string().optional(),
     requiredFiles: z.array(RequiredFileItemSchema)
 });
@@ -59,6 +60,7 @@ export const Step2IssueDecisionSchema = z.object({
     evidence: z.array(EvidenceItemSchema),
     decision: z.enum(["ACCEPTED", "DISPUTED", "REVIEW_REQUIRED"]),
     reason: z.string(),
+    commentSuggestion: z.string().optional(),
     nextSteps: z.array(z.string()).optional()
 });
 

@@ -38,6 +38,7 @@ export class DecisionEngine {
             return {
                 decision,
                 reason,
+                commentSuggestion: ['ACCEPTED','DISPUTED'].includes(decision) && typeof parsed.commentSuggestion === 'string' && !/\b(?:accept(?:ed)?|disput(?:e|ed))\b/i.test(parsed.commentSuggestion) ? parsed.commentSuggestion.trim() : '',
                 nextSteps: Array.isArray(parsed.nextSteps) && parsed.nextSteps.some(s=>typeof s === "string" && s.trim()) ? parsed.nextSteps.filter(s=>typeof s === "string" && s.trim()) : ["Review the cited evidence with the search team before taking action."]
             };
         } catch (error) {

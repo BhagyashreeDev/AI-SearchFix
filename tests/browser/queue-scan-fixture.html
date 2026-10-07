@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>SearchFix queue scan verification</title>
+<style>body{font:16px system-ui;margin:30px}table{border-collapse:collapse;margin:20px 0}td,th{border:1px solid #ccc;padding:8px}pre{white-space:pre-wrap}</style>
+<h1>Five synthetic SearchFix orders</h1>
+<div id="fixture">
+<table><tbody><tr><td><table><tbody>
+<tr><td>Overview</td><td><a href="#">Order Number ▲</a></td><td>Task Name</td></tr>
+<tr><td><a href="/OrderOverview.aspx?PublicOrderId=test-1">Overview</a></td><td><a href="javascript:claimTask()">TEST-1</a></td><td>SearchFix</td></tr>
+<tr><td><a href="./OrderOverview.aspx?PublicOrderId=test-2">Overview</a></td><td>TEST-2</td><td>Search Fix</td></tr>
+<tr><td><a href="/ORDEROVERVIEW.ASPX?PublicOrderId=test-3">Overview</a></td><td>TEST-3</td><td>Search-Fix</td></tr>
+<tr hidden><td><a href="OrderOverview.aspx?PublicOrderId=hidden">Overview</a></td><td>HIDDEN</td><td>SearchFix</td></tr>
+<tr><td><a href="OrderOverview.aspx?PublicOrderId=not-fix">Overview</a></td><td>NOT-FIX</td><td>Search</td></tr>
+</tbody></table></td></tr></tbody></table>
+<table><tbody><tr><th>Task Name</th><th>Order No.</th><th>View</th></tr>
+<tr><td>SearchFix</td><td>TEST-4</td><td><a id="absolute" href="/OrderOverview.aspx?PublicOrderId=test-4">Overview</a></td></tr>
+<tr><td>SearchFix</td><td>UNSAFE</td><td><a href="javascript:claimTask()">Claim task</a><a href="https://other.example/OrderOverview.aspx?PublicOrderId=foreign">Foreign</a><a data-order-overview href="/ClaimTask.aspx">Misleading marker</a></td></tr>
+</tbody></table>
+<table><thead><tr><th>Order Number</th><th>Task Name</th><th>View</th></tr></thead><tbody>
+<tr><td>TEST-5</td><td>SearchFix</td><td><a href="OrderOverview.aspx?PublicOrderId=test-5">Overview</a></td></tr>
+</tbody></table>
+</div><pre id="results">Running…</pre><script type="module" src="queue-scan-fixture.js"></script>

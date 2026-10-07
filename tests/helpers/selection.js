@@ -1,1 +1,15 @@
-export const selection=(issues=[],overrides={})=>({selectedCommentId:'C1',selectedRole:'CLIENT',contextCommentIds:[],selectionReason:'The latest meaningful request alleges a discrepancy.',roleReason:'The supplied context identifies a client request.',disposition:'ANALYZE',reason:'Verify the current allegation against evidence.',nextSteps:['Review the requested evidence.'],issues,...overrides});
+export const selection = (issues = [], overrides = {}) => ({
+    selectedCommentId: 'C1',
+    selectedRole: 'CLIENT',
+    contextCommentIds: [],
+    selectionReason: 'The latest meaningful request alleges a discrepancy.',
+    roleReason: 'The supplied context identifies a client request.',
+    disposition: 'ANALYZE',
+    reason: 'Verify the current allegation against evidence.',
+    nextSteps: ['Review the requested evidence.'],
+    issues: issues.map(i => ({
+        requiredDocuments: ['SEARCH_PACKAGE', 'TYPED_REPORT', 'TA'],
+        ...i
+    })),
+    ...overrides
+});

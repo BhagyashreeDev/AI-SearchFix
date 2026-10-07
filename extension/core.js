@@ -1,5 +1,21 @@
 import { BACKEND_ORIGIN } from "./deployment.js";
-export const DOCUMENT_TYPES = ["TA", "SEARCH_PACKAGE", "TAX", "PA", "LEGAL_DESCRIPTION", "MAP", "LIEN", "PACER", "PATRIOT", "TYPED_REPORT", "COST_WORKSHEET", "THR", "INDEX", "ATTORNEY_OPINION", "VENDOR_INSTRUCTIONS", "HOA_DOCUMENT", "MAILING_LIST", "PROPERTY_REPORT", "UPDATE_REPORT", "LIEN_REGISTRY", "COURT_SEARCH", "PROBATE", "SURVEY", "TORRENS", "COVER_SHEET", "CHECKLIST", "SUNBIZ", "ASSIGNMENT"];
+
+export const DOCUMENT_TYPES = [
+    "TA",
+    "SEARCH_PACKAGE",
+    "TAX",
+    "PA",
+    "LEGAL_DESCRIPTION",
+    "MAP",
+    "LIEN",
+    "PACER",
+    "PATRIOT",
+    "TYPED_REPORT",
+    "COST_WORKSHEET",
+    "THR",
+    "INDEX", "ATTORNEY_OPINION", "VENDOR_MANAGEMENT", "HOA_DOCUMENT",
+    "PROPERTY_REPORT", "LIEN_REGISTRY", "COVER_SHEET", "CHECKLIST"
+];
 
 export const DEFAULT_SETTINGS = {
   backend: BACKEND_ORIGIN,
@@ -29,32 +45,61 @@ export function guessDocumentType(name) {
   const rules = [
     [/\bTYPING ?ASSISTANT\b/, "TA"],
     [/\b(ATTORNEY(?: S)?(?: TITLE)? OPINION|AO|ATO)\b/, "ATTORNEY_OPINION"],
-    [/\b(VENDOR ?MANAGEMENT|VENDOR INSTRUCTIONS|VM|ORIGINAL ?REQUEST|SPECIAL REQUIREMENTS)\b/, "VENDOR_INSTRUCTIONS"],
+    [/\b(VENDOR ?MANAGEMENT|VENDOR ?INSTRUCTIONS?|VENDOR ?REQUIREMENTS?|VM|ORIGINAL ?REQUEST|SPECIAL ?REQUIREMENTS?|CLIENT ?REQUIREMENTS?|CLIENT ?INSTRUCTIONS?|ORDER ?INSTRUCTIONS?|REAL ?ESTATE ?REQUEST(?: FORM)?|REQUEST ?FORM|GUIDELINES)\b/, "VENDOR_MANAGEMENT"],
     [/\b(HOA|HOMEOWNERS? ASSOCIATION)\b/, "HOA_DOCUMENT"],
-    [/\bMAILING LIST\b/, "MAILING_LIST"],
     [/\bPROPERTY (?:VIEW )?REPORT\b/, "PROPERTY_REPORT"],
-    [/\bUPDATE REPORT\b/, "UPDATE_REPORT"],
     [/\bLIEN REGISTR[YI]\b/, "LIEN_REGISTRY"],
-    [/\b(PROTHO|COURT SEARCH|JUDGMENT SEARCH|JUDGEMENT SEARCH)\b/, "COURT_SEARCH"],
-    [/\b(PROBATE|SURROGATE|ESTATE SEARCH)\b/, "PROBATE"],
-    [/\bSURVEY\b/, "SURVEY"], [/\bTORRENS\b/, "TORRENS"],
     [/\b(COVER ?SHEET|RUN ?SHEET)\b/, "COVER_SHEET"],
-    [/\bCHECK ?LIST\b/, "CHECKLIST"], [/\bSUNBIZ\b/, "SUNBIZ"],
-    [/\bASSIGNMENT\b/, "ASSIGNMENT"],
+    [/\bCHECK ?LIST\b/, "CHECKLIST"],
     [/\b(TYPED|REPORT TYPED|TYPING|TA)\b/, "TYPED_REPORT"],
     [/\b(PACER|BANKRUPTCY)\b/, "PACER"], [/\bPATRIOT\b/, "PATRIOT"],
-    [/\b(THR|TRANSACTION HISTORY)\b/, "THR"],
+    [/\b(THR|TRANSACTION ?HISTORY)\b/, "THR"],
     [/\bTAX\b/, "TAX"], [/\b(PA|PASANP|PASNAP|PASNAPSHOT|PROPERTY ASSESSMENT)\b/, "PA"],
     [/\bLEGAL\b/, "LEGAL_DESCRIPTION"], [/\b(MAP|PLAT)\b/, "MAP"],
     [/\bLIEN\b/, "LIEN"], [/\bCOST\b/, "COST_WORKSHEET"],
-    [/\b(SEARCH INDEX|SEARCH INDEXES|INDEX|INDEXES)\b/, "INDEX"],
-    [/\bSEARCH PACKAGE\b/, "SEARCH_PACKAGE"]
+    [/\b(SEARCH ?INDEX|SEARCH ?INDEXES|INDEX|INDEXES)\b/, "INDEX"],
+    [/\bSEARCH ?PACKAGE\b/, "SEARCH_PACKAGE"]
   ];
   return rules.find(([pattern]) => pattern.test(words))?.[1] || "";
 }
 
+export function parseRecencyScore(file) {
+  if (typeof file?.timestamp === 'number' && !isNaN(file.timestamp)) return file.timestamp;
+  const name = file?.name || "";
+  const uploadDate = file?.uploadDate || file?.attachedDate || file?.date || "";
+  if (uploadDate) {
+    const combined = file?.attachedTime ? `${uploadDate} ${file.attachedTime}` : uploadDate;
+    const parsed = Date.parse(combined);
+    if (!isNaN(parsed)) return parsed;
+  }
+  const iso = name.match(/(20\d{2})[-_./](\d{1,2})[-_./](\d{1,2})/);
+  if (iso) {
+    const t = new Date(`${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`).getTime();
+    if (!isNaN(t)) return t;
+  }
+  const us = name.match(/(\d{1,2})[-_./](\d{1,2})[-_./](20\d{2})/);
+  if (us) {
+    const t = new Date(`${us[3]}-${us[1].padStart(2, "0")}-${us[2].padStart(2, "0")}`).getTime();
+    if (!isNaN(t)) return t;
+  }
+  const ver = name.match(/(?:[_\b]v|version|rev)[-_.]?(\d+)/i);
+  if (ver) return Number(ver[1]) * 1000;
+  return 0;
+}
+
 export function requiredTypes(result) {
   return [...new Set((result.issues || []).flatMap(issue => (issue.requiredFiles || []).map(file => file.fileType)))];
+}
+
+export function suggestedComment(result) {
+  const status = result.overallDecision || result.status;
+  if (!['ACCEPTED','DISPUTED'].includes(status)) return null;
+  const clean = value => typeof value === 'string' ? value.replace(/\b(?:accept(?:ed)?|disput(?:e|ed))\b\s*:?/gi,'').trim() : '';
+  const issues = (result.issues || []).filter(issue => ['ACCEPTED','DISPUTED'].includes(issue.decision));
+  const text = issues.map(issue => clean(issue.commentSuggestion) || clean(issue.reason)).filter(Boolean).join('\n\n') || clean(result.reason) || (result.nextSteps || []).map(clean).filter(Boolean).join('\n');
+  if (!text) return null;
+  return {text, needsCompletion: status === 'ACCEPTED' && result.decisionBasis !== 'CLIENT_TASK',
+    hasPendingReview: (result.issues || []).some(issue => issue.decision === 'REVIEW_REQUIRED')};
 }
 
 export function validateOrder(order) {
@@ -102,15 +147,56 @@ export function buildAssistantText(result) {
 
 // Look inside a bundle when a requested standalone source is unavailable.
 // TA and the actual Typed Report always remain separate, explicit sources.
-export function selectEvidenceAttachments(attachments, required) {
-  const files=[...new Map(attachments.map(file=>[file.url,{...file,type:guessDocumentType(file.name)}])).values()];
-  const preferred=files.filter(file=>! /\.docx?$/i.test(file.name) || !files.some(other=>/\.pdf$/i.test(other.name) && other.name.replace(/\.pdf$/i,'').toLowerCase()===file.name.replace(/\.docx?$/i,'').toLowerCase()));
-  const selected=preferred.filter(file=>file.type!=='TA' && required.includes(file.type));
-  const needsBundle=required.some(type=>!['TA','TYPED_REPORT'].includes(type) && !selected.some(file=>file.type===type));
-  if(needsBundle){
-    const packages=preferred.filter(file=>file.type==='SEARCH_PACKAGE');
-    const bundles=packages.length?packages:preferred.filter(file=>file.type==='PROPERTY_REPORT');
-    for(const file of bundles)if(!selected.some(other=>other.url===file.url))selected.push(file);
+// If multiple attachments exist for the same document type, the most recent one is chosen.
+export function selectEvidenceAttachments(attachments, required, issues = []) {
+  const files = [...new Map(attachments.map(file => [file.url, { ...file, type: guessDocumentType(file.name) }])).values()];
+  const preferred = files.filter(file => !/\.docx?$/i.test(file.name) || !files.some(other => /\.pdf$/i.test(other.name) && other.name.replace(/\.pdf$/i, '').toLowerCase() === file.name.replace(/\.docx?$/i, '').toLowerCase()));
+  
+  const deedIssues = new Set(['MISSING_DEED', 'DEED_DISCREPANCY', 'VESTING_DISCREPANCY', 'CHAIN_BREAK', 'LENDER_NAME_DISCREPANCY']);
+  const needsDeed = issues.some(issue => deedIssues.has(issue.issueType) || /\bdeed\b/i.test(issue.claim || issue.clientClaim || ''));
+  const deeds = needsDeed ? preferred.filter(file => !file.type && /\bdeed\b/i.test(file.name.replace(/[_-]/g, ' ')) && !/\b(?:trust|mortgage)\b/i.test(file.name)) : [];
+  
+  // Sort matching candidates by recency descending
+  const packageNeeded = issues.some(issue => !deedIssues.has(issue.issueType) && (issue.requiredFiles || []).some(f => f.fileType === 'SEARCH_PACKAGE'));
+  const candidateFiles = preferred.filter(file => file.type !== 'TA' && required.includes(file.type) && !(file.type === 'SEARCH_PACKAGE' && deeds.length && !packageNeeded));
+  
+  // Check for explicit filenames recommended by backend AI analysis
+  const explicitFiles = preferred.filter(file => 
+    issues.some(issue => (issue.requiredFiles || []).some(rf => rf.fileName && rf.fileName.toLowerCase() === file.name.toLowerCase() && !['TYPED REPORT', 'TYPING ASSISTANT'].includes(rf.fileName)))
+  );
+
+  // Group by document type and sort each group by recency descending
+  const selected = [];
+  const typeGroups = new Map();
+  for (const file of candidateFiles) {
+    if (!typeGroups.has(file.type)) typeGroups.set(file.type, []);
+    typeGroups.get(file.type).push(file);
+  }
+  for (const [type, group] of typeGroups.entries()) {
+    if (group.length > 1) {
+      group.sort((a, b) => parseRecencyScore(b) - parseRecencyScore(a));
+      // For package/report bundles, pick the most recent one
+      if (['SEARCH_PACKAGE', 'PROPERTY_REPORT', 'TYPED_REPORT'].includes(type)) {
+        selected.push(group[0]);
+        continue;
+      }
+    }
+    selected.push(...group);
+  }
+
+  selected.unshift(...deeds.map(file => ({ ...file, type: 'SEARCH_PACKAGE' })));
+  
+  const needsBundle = required.some(type => !['TA', 'TYPED_REPORT'].includes(type) && !selected.some(file => file.type === type));
+  if (needsBundle) {
+    const packages = preferred.filter(file => file.type === 'SEARCH_PACKAGE');
+    const bundles = packages.length ? packages : preferred.filter(file => file.type === 'PROPERTY_REPORT');
+    if (bundles.length > 1) bundles.sort((a, b) => parseRecencyScore(b) - parseRecencyScore(a));
+    for (const file of bundles) {
+      if (!selected.some(other => other.url === file.url)) {
+        selected.push(file);
+        break; // Pick the most recent bundle
+      }
+    }
   }
   return selected;
 }
