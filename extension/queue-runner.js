@@ -212,14 +212,16 @@ export class QueueRunner {
             await this.ready(examTab.id);
 
             let examView = null;
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            for (let attempt = 1; attempt <= 40; attempt++) {
               try {
                 examView = await this.readSource(examTab.id, snapshot, "exam");
-                if (examView?.previewUrl || (examView?.text && examView.text.length >= 20)) {
+                const isLoadedContent = examView?.text && examView.text.length >= 50 &&
+                  !/\bloading(?:\s+[\w.-]+)?(?:\s*\.{2,}|\s+please\s+wait|\b)|\bplease\s+wait\b/i.test(examView.text);
+                if (examView?.previewUrl || isLoadedContent) {
                   break;
                 }
               } catch (error) {
-                if (attempt === 15 || !/empty|loading|not an identifiable|cannot confirm/i.test(error.message)) {
+                if (attempt === 40 || !/empty|loading|not an identifiable|cannot confirm/i.test(error.message)) {
                   throw error;
                 }
               }
@@ -234,11 +236,14 @@ export class QueueRunner {
                 url: examView.previewUrl,
                 format: "docx",
                 tabId: examTab.id,
-                source: "exam"
+                source: "exam",
+                fallbackText: examView.text
               });
-            } else if (examView?.text) {
+            } else if (examView?.text && !/\bloading(?:\s+[\w.-]+)?(?:\s*\.{2,}|\s+please\s+wait|\b)|\bplease\s+wait\b/i.test(examView.text)) {
               typedReportText = examView.text;
               this.log('source.read.complete', { kind: 'exam', characters: typedReportText.length });
+            } else {
+              throw new Error("Typing Module did not finish loading.");
             }
           }
         } catch (error) {
@@ -262,7 +267,6 @@ export class QueueRunner {
     if (typedReportText) documents.push({ name: "Typed Report (Typing Module)", type: "TYPED_REPORT", status: "DOWNLOADED" });
     this.currentDocuments = documents; this.onDocuments(documents);
     const form = new FormData();
-    form.append("orderData", JSON.stringify({ ...order, analysisId: step1.analysisId, taText, typedReportText }));
     let total = 0;
     for (const [index, file] of selected.entries()) {
       try {
@@ -296,8 +300,20 @@ export class QueueRunner {
         this.log('pdf.download.complete', { fileType: file.type, bytes: byteCount });
         form.append(`file${index}`, new Blob(chunks, { type: mimeType }), file.name);
         form.append(`fileType_file${index}`, file.type);
-      } catch (error) { documents[index].status = "FAILED"; this.onDocuments(documents); this.log('pdf.download.failed', { fileType: file.type, errorCode: error.code, httpStatus: error.httpStatus }); warnings.push(`${file.name}: ${error.message}`); }
+      } catch (error) {
+        if (file.type === "TYPED_REPORT" && file.fallbackText && file.fallbackText.length >= 50 &&
+            !/\bloading(?:\s+[\w.-]+)?(?:\s*\.{2,}|\s+please\s+wait|\b)|\bplease\s+wait\b/i.test(file.fallbackText)) {
+          this.log('exam.docx.fallback_to_text', { name: file.name, characters: file.fallbackText.length });
+          typedReportText = file.fallbackText;
+          documents[index].name = "Typed Report (Typing Module)";
+          documents[index].status = "DOWNLOADED";
+          this.onDocuments(documents);
+          continue;
+        }
+        documents[index].status = "FAILED"; this.onDocuments(documents); this.log('pdf.download.failed', { fileType: file.type, errorCode: error.code, httpStatus: error.httpStatus }); warnings.push(`${file.name}: ${error.message}`);
+      }
     }
+    form.append("orderData", JSON.stringify({ ...order, analysisId: step1.analysisId, taText, typedReportText }));
     await this.assertUnchanged(tabId, snapshot);
     this.onProgress(`Analyzing evidence for ${order.orderNumber}…`);
     this.log('evidence.submit', { bytes: total, characters: taText.length, missing: required.filter(type => type === 'TA' ? !taText : ![...form.entries()].some(([key, value]) => key.startsWith('fileType_') && value === type)) });

@@ -167,6 +167,24 @@ test('serialized Tasks reader resolves TypingModule URL and handles exam page ex
   assert.equal(examResult.docxName, 'TPS-AD-TEST_TypedReport.docx');
   assert.match(examResult.text, /SUB-LEGAL: Lot 3 Block 2022 Charlotte FL/);
   assert.match(examResult.text, /Chain of Title: Deed 1234/);
+
+  const loadingExamReader = vm.runInNewContext(`(${readSupportingView.toString()})`, {
+    URL,
+    location: new URL(`${origin}/Exam?id=${id}&examTaskName=Typing%20Module%20Task&wfttid=944`),
+    document: {
+      title: 'TitleVision - Exam',
+      body: {
+        innerText: `Loading ${id}. Please wait...`,
+        cloneNode: () => ({
+          querySelectorAll: () => [],
+          innerText: `Loading ${id}. Please wait...`
+        })
+      },
+      querySelector: () => null,
+      querySelectorAll: () => []
+    }
+  });
+  assert.throws(() => loadingExamReader('TPS-AD-TEST', id, 'exam'), /loading/i);
 });
 
 test('openSupportingLink resolves wfiid for Tasks.aspx from primary title workflow instance (Two Owner/Full Title)', () => {

@@ -178,7 +178,11 @@ export async function analyzeDocumentsController(req, res) {
             }
         }
         if (taText.trim()) uploadedFiles.push({fileName:"Typing Assistant text", fileType:"TA", inlineText:taText.trim()});
-        if (typedReportText.trim()) uploadedFiles.push({fileName:"Typed Report (Typing Module)", fileType:"TYPED_REPORT", inlineText:typedReportText.trim()});
+        const isTypedReportLoadingOnly = /\bloading(?:\s+[\w.-]+)?(?:\s*\.{2,}|\s+please\s+wait|\b)|\bplease\s+wait\b/i.test(typedReportText) ||
+            /^\s*loading\b/i.test(typedReportText.trim());
+        if (typedReportText.trim() && !isTypedReportLoadingOnly) {
+            uploadedFiles.push({fileName:"Typed Report (Typing Module)", fileType:"TYPED_REPORT", inlineText:typedReportText.trim()});
+        }
         trace('evidence.received',{count:(req.files || []).length,bytes:(req.files || []).reduce((n,f)=>n+(f.size || 0),0),characters:taText.length + typedReportText.length});
 
         // Stage 4-6: PDF Document Analysis, Evidence Extraction & Decision Engine

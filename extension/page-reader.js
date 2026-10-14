@@ -230,12 +230,41 @@ export async function readAttachment(url, expectedPageUrl, transfer = false, cap
   }
   if (response.url && new URL(response.url).origin !== location.origin) throw failure('PDF_NETWORK_OR_REDIRECT', 'The attachment redirected outside this website. Check the attachment link.');
   if (!response.ok) throw failure('PDF_HTTP_ERROR', `Attachment download failed (${response.status}). Check the website session and access to this file.`, response.status);
-  const blob=await response.blob();
-  const bytes=new Uint8Array(await blob.slice(0,8).arrayBuffer());
-  const pdf = new TextDecoder().decode(bytes.slice(0, 5)) === "%PDF-";
-  const doc = [208,207,17,224,161,177,26,225].every((value,index)=>bytes[index]===value);
-  const docx = bytes[0]===80 && bytes[1]===75 && bytes[2]===3 && bytes[3]===4;
-  const isTxt = /\.txt$/i.test(transfer?.fileName || target.pathname);
+  let blob=await response.blob();
+  let bytes=new Uint8Array(await blob.slice(0,8).arrayBuffer());
+  let pdf = new TextDecoder().decode(bytes.slice(0, 5)) === "%PDF-";
+  let doc = [208,207,17,224,161,177,26,225].every((value,index)=>bytes[index]===value);
+  let docx = bytes[0]===80 && bytes[1]===75 && bytes[2]===3 && bytes[3]===4;
+  let isTxt = /\.txt$/i.test(transfer?.fileName || target.pathname);
+  if (!pdf && !doc && !docx && !isTxt && blob.size < 1000000) {
+    try {
+      const htmlText = await blob.text();
+      const redirectMatch = htmlText.match(/<iframe[^>]+src=["']([^"']+)["']/i) ||
+                            htmlText.match(/<a[^>]+href=["']([^"']+\.(?:docx?|pdf)[^"']*)["']/i) ||
+                            htmlText.match(/window\.location(?:\.href)?\s*=\s*["']([^"']+)["']/i) ||
+                            htmlText.match(/content=["']\d+;\s*url=([^"']+)["']/i);
+      if (redirectMatch) {
+        const nextTarget = new URL(redirectMatch[1], target.href);
+        if (nextTarget.origin === location.origin) {
+          const nextResp = await fetch(nextTarget.href, { method: "GET", credentials: "same-origin", mode: "same-origin", redirect: "follow", signal: AbortSignal.timeout(300000) });
+          if (nextResp.ok) {
+            const nextBlob = await nextResp.blob();
+            const nextBytes = new Uint8Array(await nextBlob.slice(0, 8).arrayBuffer());
+            const nextPdf = new TextDecoder().decode(nextBytes.slice(0, 5)) === "%PDF-";
+            const nextDoc = [208,207,17,224,161,177,26,225].every((value,index)=>nextBytes[index]===value);
+            const nextDocx = nextBytes[0]===80 && nextBytes[1]===75 && nextBytes[2]===3 && nextBytes[3]===4;
+            if (nextPdf || nextDoc || nextDocx) {
+              blob = nextBlob;
+              bytes = nextBytes;
+              pdf = nextPdf;
+              doc = nextDoc;
+              docx = nextDocx;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
   if (!pdf && !doc && !docx && !isTxt) throw failure('PDF_CONTENT_INVALID', "The attachment response is not a PDF or Word document. It may be a sign-in or viewer page; check access in this browser.", response.status);
   const mimeType=pdf?'application/pdf':doc?'application/msword':docx?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'text/plain';
   if(transfer?.start){
@@ -342,23 +371,46 @@ export function readSupportingView(orderNumber, publicOrderId, kind, captureErro
     }
 
     let previewUrl = null;
-    const previewBtn = (document.querySelectorAll ? [...document.querySelectorAll('button, input[type="button"], a')] : []).find(el => 
+    const previewBtn = (document.querySelectorAll ? [...document.querySelectorAll('button, input, a, [onclick*="launchPreviewDocument"], [onclick*="GeneratePreviewDocument"]')] : []).find(el => 
       /preview\s*output/i.test(el.innerText || el.value || el.getAttribute?.('title') || '') ||
-      /launchPreviewDocument/i.test(el.getAttribute?.('onclick') || '')
+      /launchPreviewDocument/i.test(el.getAttribute?.('onclick') || el.getAttribute?.('href') || el.onclick?.toString?.() || '')
     );
 
     if (previewBtn) {
-      const onclick = previewBtn.getAttribute?.('onclick') || '';
-      const match = onclick.match(/launchPreviewDocument\(\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"](?:\s*,\s*([^)]+))?\)/i);
+      const onclick = (previewBtn.getAttribute?.('onclick') || previewBtn.getAttribute?.('href') || previewBtn.onclick?.toString?.() || '');
+      const match = onclick.match(/launchPreviewDocument\(\s*['"]?([^'",]*)['"]?\s*,\s*['"]?([^'",]*)['"]?\s*,\s*['"]?([^'",]*)['"]?\s*,\s*['"]?([^'",)]*)['"]?(?:\s*,\s*([^)]+))?\)/i);
       if (match) {
         const appPath = match[1] || '/';
-        const pOrderId = match[2];
+        const pOrderId = match[2] || publicOrderId || ids[0];
         const pwfiid = match[3];
         const token = match[4];
 
         let urlPattern = null;
+        let fnStr = null;
         if (typeof window !== 'undefined' && typeof window.launchPreviewDocument === 'function') {
-          const fnStr = window.launchPreviewDocument.toString();
+          fnStr = window.launchPreviewDocument.toString();
+        }
+        if (!fnStr && typeof document !== 'undefined') {
+          try {
+            const bridge = document.createElement('script');
+            bridge.textContent = `if(typeof window.launchPreviewDocument==='function'){document.documentElement.setAttribute('data-sf-preview-fn',window.launchPreviewDocument.toString());}`;
+            (document.head || document.documentElement).appendChild(bridge);
+            bridge.remove();
+            fnStr = document.documentElement.getAttribute('data-sf-preview-fn');
+            document.documentElement.removeAttribute('data-sf-preview-fn');
+          } catch {}
+          if (!fnStr) {
+            for (const s of (document.querySelectorAll ? document.querySelectorAll('script') : [])) {
+              const code = s.textContent || s.innerText || '';
+              if (code.includes('launchPreviewDocument')) {
+                const m = code.match(/function\s+launchPreviewDocument[\s\S]*?\{[\s\S]*?\}/);
+                if (m) { fnStr = m[0]; break; }
+              }
+            }
+          }
+        }
+
+        if (fnStr) {
           const pathMatch = fnStr.match(/['"`](\/?[^'"`]*(?:DocGen|Preview|Exam)[^'"`]*)['"`]/i);
           if (pathMatch) {
             urlPattern = pathMatch[1];
@@ -376,7 +428,8 @@ export function readSupportingView(orderNumber, publicOrderId, kind, captureErro
           }
           previewUrl = new URL(resolvedPath, location.origin).href;
         } else {
-          previewUrl = new URL(`/DocGen/GeneratePreviewDocument?publicOrderId=${encodeURIComponent(pOrderId)}&pwfiid=${encodeURIComponent(pwfiid)}&token=${encodeURIComponent(token)}`, location.origin).href;
+          const basePath = appPath.endsWith('/') ? appPath : `${appPath}/`;
+          previewUrl = new URL(`${basePath.replace(/^\//, '') ? basePath : '/'}DocGen/GeneratePreviewDocument?publicOrderId=${encodeURIComponent(pOrderId)}&pwfiid=${encodeURIComponent(pwfiid)}&token=${encodeURIComponent(token)}`, location.origin).href;
         }
       } else {
         const href = previewBtn.getAttribute?.('href');
@@ -398,7 +451,11 @@ export function readSupportingView(orderNumber, publicOrderId, kind, captureErro
       content += "\n\n--- Form Inputs ---\n" + inputValues.join("\n\n");
     }
 
-    if (!previewUrl && (!content || content.length < 20)) {
+    const isLoadingText = /\bloading(?:\s+[\w.-]+)?(?:\s*\.{2,}|\s+please\s+wait|\b)|\bplease\s+wait\b/i.test(text) ||
+      /^\s*loading\b/i.test(text);
+    const substantive = content.replace(/\bloading(?:\s+[\w.-]+)?(?:\s*\.{2,}|\s+please\s+wait|\b)[^.\n]*\.{0,3}/gi, '').trim();
+
+    if (!previewUrl && (isLoadingText || (substantive.length < 50 && inputValues.length === 0))) {
       throw new Error("Typing Module is loading or empty.");
     }
     if (content.length > 250000) {
