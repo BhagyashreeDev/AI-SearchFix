@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import {openSupportingLink,readSupportingView} from '../extension/page-reader.js';
+import {openSupportingLink,readSupportingView,readOrderPage,navigateQueuePage} from '../extension/page-reader.js';
 import {createPageInjector} from '../extension/injection.js';
 import {createActivityLog} from '../extension/activity-log.js';
-import {guessDocumentType} from '../extension/core.js';
+import {guessDocumentType,DEFAULT_SETTINGS} from '../extension/core.js';
 
 const id='11111111-2222-3333-4444-555555555555';
 const origin='https://tv.datatracetitle.com';
@@ -203,4 +203,157 @@ test('openSupportingLink resolves wfiid for Tasks.aspx from primary title workfl
   const result = reader('tasks', href, true);
   assert.equal(result.url, `${origin}/Tasks.aspx?PublicOrderId=${poid}&wfiid=${twoOwnerWfiid}`);
 });
+
+test('readOrderPage extracts RadGrid pager metadata accurately', () => {
+  const pagerMock = {
+    innerText: '560 items in 2 pages',
+    textContent: '560 items in 2 pages',
+    getClientRects: () => [{}],
+    closest: () => null,
+    querySelector: selector => {
+      if (selector.includes('rgCurrentPage')) return { innerText: '1', textContent: '1', getClientRects: () => [{}] };
+      if (selector.includes('rgPageNext')) return { disabled: false, classList: { contains: () => false } };
+      return null;
+    },
+    querySelectorAll: selector => {
+      if (selector.includes('rgNumPart a')) return [
+        { innerText: '1', textContent: '1', getClientRects: () => [{}] },
+        { innerText: '2', textContent: '2', getClientRects: () => [{}] }
+      ];
+      return [];
+    }
+  };
+
+  const context = {
+    URL,
+    location: new URL(`${origin}/Queues.aspx`),
+    document: {
+      title: 'Order Manager Queue - TitleVision',
+      querySelector: selector => {
+        if (selector.includes('rgPager') || selector.includes('rgPagerCell')) return pagerMock;
+        return null;
+      },
+      querySelectorAll: selector => {
+        if (selector === 'table') return [];
+        if (selector === 'a[href]') return [];
+        return [];
+      }
+    }
+  };
+
+  const reader = vm.runInNewContext(`(${readOrderPage.toString()})`, context);
+  const result = reader(DEFAULT_SETTINGS, true);
+  assert.ok(result.pager);
+  assert.equal(result.pager.currentPage, 1);
+  assert.equal(result.pager.totalPages, 2);
+  assert.equal(result.pager.totalItems, 560);
+  assert.equal(result.pager.hasNextPage, true);
+});
+
+test('navigateQueuePage triggers click on corresponding target page link or next button', () => {
+  let clickedPage = null;
+  const page2Link = {
+    innerText: '2',
+    textContent: '2',
+    querySelector: () => null,
+    click: () => { clickedPage = 2; }
+  };
+  const page1Link = {
+    innerText: '1',
+    textContent: '1',
+    querySelector: () => null,
+    click: () => { clickedPage = 1; }
+  };
+
+  const pagerMock = {
+    querySelector: selector => {
+      if (selector.includes('rgCurrentPage')) return { innerText: '1', textContent: '1' };
+      return null;
+    },
+    querySelectorAll: selector => {
+      if (selector.includes('rgNumPart a')) return [page1Link, page2Link];
+      return [];
+    }
+  };
+
+  const context = {
+    URL,
+    location: new URL(`${origin}/Queues.aspx`),
+    document: {
+      querySelector: selector => {
+        if (selector.includes('rgPager') || selector.includes('rgPagerCell')) return pagerMock;
+        return null;
+      }
+    }
+  };
+
+  const nav = vm.runInNewContext(`(${navigateQueuePage.toString()})`, context);
+  const res = nav(2, true);
+  assert.equal(res.navigating, true);
+  assert.equal(res.targetPage, 2);
+  assert.equal(clickedPage, 2);
+});
+
+test('readOrderPage assigns current page number to extracted queue tasks', () => {
+  const pagerMock = {
+    innerText: '560 items in 2 pages',
+    textContent: '560 items in 2 pages',
+    getClientRects: () => [{}],
+    closest: () => null,
+    querySelector: selector => selector.includes('rgCurrentPage') ? { innerText: '2', textContent: '2', getClientRects: () => [{}], closest: () => null } : null,
+    querySelectorAll: () => []
+  };
+
+  const headerRow = {
+    cells: [
+      { innerText: 'Order Number', textContent: 'Order Number', getClientRects: () => [{}], closest: () => null },
+      { innerText: 'Task Name', textContent: 'Task Name', getClientRects: () => [{}], closest: () => null }
+    ],
+    getClientRects: () => [{}],
+    closest: () => null
+  };
+
+  const overviewAnchor = {
+    getAttribute: key => key === 'href' ? '/OrderOverview.aspx?PublicOrderId=p2-order' : null,
+    getClientRects: () => [{}],
+    closest: selector => selector === 'tr' ? taskRow : null
+  };
+
+  const taskRow = {
+    cells: [
+      { innerText: 'TPS-AD-PAGE2', textContent: 'TPS-AD-PAGE2', getClientRects: () => [{}], closest: () => null },
+      { innerText: 'SearchFix', textContent: 'SearchFix', getClientRects: () => [{}], closest: () => null }
+    ],
+    getClientRects: () => [{}],
+    closest: () => null,
+    querySelectorAll: selector => selector.includes('a[href]') ? [overviewAnchor] : []
+  };
+
+  const tableMock = {
+    getClientRects: () => [{}],
+    closest: () => null,
+    querySelectorAll: selector => selector === 'tr' ? [headerRow, taskRow] : []
+  };
+  headerRow.closest = selector => selector === 'table' ? tableMock : null;
+  taskRow.closest = selector => selector === 'table' ? tableMock : null;
+
+  const context = {
+    URL,
+    location: new URL(`${origin}/Queues.aspx`),
+    document: {
+      title: 'Order Manager Queue - TitleVision',
+      querySelector: selector => (selector.includes('rgPager') || selector.includes('rgPagerCell')) ? pagerMock : null,
+      querySelectorAll: selector => selector === 'table' ? [tableMock] : selector === 'a[href]' ? [overviewAnchor] : []
+    }
+  };
+
+  const reader = vm.runInNewContext(`(${readOrderPage.toString()})`, context);
+  const result = reader(DEFAULT_SETTINGS, false);
+  assert.equal(result.tasks.length, 1);
+  assert.equal(result.tasks[0].orderNumber, 'TPS-AD-PAGE2');
+  assert.equal(result.tasks[0].pageNumber, 2);
+});
+
+
+
 

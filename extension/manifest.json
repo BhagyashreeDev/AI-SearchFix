@@ -12,8 +12,7 @@
   ],
   "host_permissions": [
     "https://tv.datatracetitle.com/*",
-    "http://localhost:3000/*",
-    "http://127.0.0.1:3000/*"
+    "https://ai-searchfix.onrender.com/*"
   ],
   "action": {
     "default_title": "Open SearchFix Typing Assistant"

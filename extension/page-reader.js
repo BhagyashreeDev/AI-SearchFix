@@ -111,10 +111,65 @@ export function readOrderPage(settings, captureErrors = false) {
   const attachments = attachmentRoot ? [...attachmentRoot.querySelectorAll("a[href]")].filter(visible).map(a => ({
     name: clean(a.getAttribute("download") || text(a)), url: safeLink(a)
   })).filter(a => a.name && a.url) : [];
+  const pagerElement = document.querySelector('.rgPager, .rgPagerCell, [class*="Pager"], [class*="pager"]');
+  let pager = null;
+  if (pagerElement && visible(pagerElement)) {
+    const pagerText = text(pagerElement);
+    let currentPage = 1;
+    let totalPages = 1;
+    let totalItems = 0;
+
+    const currentPgEl = pagerElement.querySelector('.rgCurrentPage, span.rgCurrentPage, a.rgCurrentPage, .rgNumPart strong');
+    if (currentPgEl) {
+      const parsed = parseInt(text(currentPgEl), 10);
+      if (!isNaN(parsed) && parsed > 0) currentPage = parsed;
+    } else {
+      const curMatch = pagerText.match(/page\s*(\d+)(?:\s*of\s*|\s*\/\s*)(\d+)/i);
+      if (curMatch) {
+        currentPage = parseInt(curMatch[1], 10);
+        totalPages = parseInt(curMatch[2], 10);
+      }
+    }
+
+    const pagesMatch = pagerText.match(/(?:in|\/|of)\s*(\d+)\s*pages?/i) || pagerText.match(/page\s*\d+\s*of\s*(\d+)/i);
+    if (pagesMatch) {
+      const parsed = parseInt(pagesMatch[1], 10);
+      if (!isNaN(parsed) && parsed > 0) totalPages = parsed;
+    } else {
+      const numLinks = [...pagerElement.querySelectorAll('.rgNumPart a, .rgNumPart span, a[href*="Page$"]')];
+      for (const link of numLinks) {
+        const num = parseInt(text(link), 10);
+        if (!isNaN(num) && num > totalPages) totalPages = num;
+      }
+    }
+
+    const itemsMatch = pagerText.match(/(\d+)\s*items?/i);
+    if (itemsMatch) {
+      totalItems = parseInt(itemsMatch[1], 10);
+    }
+
+    const nextButton = pagerElement.querySelector('input.rgPageNext, a.rgPageNext, input[title="Next Page"], input[title*="Next"]');
+    const hasNextPage = currentPage < totalPages || (nextButton && !nextButton.disabled && !nextButton.classList.contains('rgPageNextDisabled'));
+
+    pager = {
+      currentPage,
+      totalPages,
+      totalItems,
+      hasNextPage: Boolean(hasNextPage)
+    };
+  }
+
+  const currentPageNumber = pager?.currentPage || 1;
+  const tasksWithPage = tasks.map(t => ({
+    ...t,
+    pageNumber: t.pageNumber || currentPageNumber
+  }));
+
   return {
     pageUrl: location.href, title: document.title, orderNumber, comments,
-    tasks: [...new Map(tasks.map(t => [t.url, t])).values()],
+    tasks: [...new Map(tasksWithPage.map(t => [t.url, t])).values()],
     scanDiagnostics,
+    pager,
     overviewLinks, queueLinks, attachments: [...new Map(attachments.map(a => [a.url, a])).values()],
     taStatus: text(document.querySelector('[id$="_liTypingAssistant"]')),
     typingAssistantText: text(query(document, settings.taRead)),
@@ -544,6 +599,56 @@ export function openSupportingLink(kind, expectedPageUrl, captureErrors = false)
   throw new Error("Source navigation requires an unverified website action. Open the read-only source manually; automatic analysis requires review.");
   } catch (error) {
     if (captureErrors) return {searchFixError: error.message};
+    throw error;
+  }
+}
+
+export function navigateQueuePage(targetPage, captureErrors = false) {
+  try {
+    const target = parseInt(targetPage, 10);
+    if (isNaN(target) || target < 1) throw new Error(`Invalid target page number: ${targetPage}`);
+
+    const pagerElement = document.querySelector('.rgPager, .rgPagerCell, [class*="Pager"], [class*="pager"]');
+    if (!pagerElement) throw new Error("No pager element found on the page.");
+
+    const numLinks = [...pagerElement.querySelectorAll('.rgNumPart a, a[href*="Page$"], .rgNumPart span, a')];
+    const targetLink = numLinks.find(a => {
+      const t = (a.innerText || a.textContent || '').trim();
+      return t === String(target) || a.querySelector('span')?.textContent?.trim() === String(target);
+    });
+
+    if (targetLink && typeof targetLink.click === 'function') {
+      targetLink.click();
+      return { navigating: true, targetPage: target };
+    }
+
+    const currentPgEl = pagerElement.querySelector('.rgCurrentPage, span.rgCurrentPage, a.rgCurrentPage');
+    const currentPage = currentPgEl ? parseInt((currentPgEl.innerText || currentPgEl.textContent || '').trim(), 10) : 1;
+
+    if (target > currentPage) {
+      const nextBtn = pagerElement.querySelector('input.rgPageNext, a.rgPageNext, input[title="Next Page"], input[title*="Next"]');
+      if (nextBtn && !nextBtn.disabled && typeof nextBtn.click === 'function') {
+        nextBtn.click();
+        return { navigating: true, targetPage: target, clicked: 'next' };
+      }
+    } else if (target < currentPage) {
+      if (target === 1) {
+        const firstBtn = pagerElement.querySelector('input.rgPageFirst, a.rgPageFirst, input[title="First Page"], input[title*="First"]');
+        if (firstBtn && !firstBtn.disabled && typeof firstBtn.click === 'function') {
+          firstBtn.click();
+          return { navigating: true, targetPage: 1, clicked: 'first' };
+        }
+      }
+      const prevBtn = pagerElement.querySelector('input.rgPagePrev, a.rgPagePrev, input[title="Previous Page"], input[title*="Prev"]');
+      if (prevBtn && !prevBtn.disabled && typeof prevBtn.click === 'function') {
+        prevBtn.click();
+        return { navigating: true, targetPage: target, clicked: 'prev' };
+      }
+    }
+
+    throw new Error(`Could not find pagination control to navigate to page ${target}.`);
+  } catch (error) {
+    if (captureErrors) return { searchFixError: error.message };
     throw error;
   }
 }
