@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, buildAssistantText, suggestedComment } from "./core.js";
-import { readOrderPage } from "./page-reader.js";
+import { readOrderPage, navigateQueuePage } from "./page-reader.js";
 import { QueueRunner } from "./queue-runner.js";
 import { createApiClient, normalizeApiKey } from "./api-client.js";
 import { createPageInjector } from "./injection.js";
@@ -147,43 +147,66 @@ async function openOrder(task) {
   status(`Opened ${task.orderNumber}. Choose Start analysis when ready.`);
 }
 function renderTasks() {
-  $("tasks").replaceChildren();taskCards.clear();
+  $("tasks").replaceChildren();
+  const nextCardMap = new Map();
   for(const task of discoveredTasks){
-    const card=document.createElement('details');card.className='orderCard';
-    const header=document.createElement('summary');header.className='orderHeader';header.title='Expand or collapse order details';
-    const toggle=document.createElement('span');toggle.className='orderToggle';toggle.textContent='▸';toggle.setAttribute('aria-hidden','true');
-    const orderCol=document.createElement('div');orderCol.className='orderCol';
-    const label=document.createElement('button');label.type='button';label.className='orderLink';label.textContent=task.orderNumber || task.name;label.title='Open Order Overview';
-    label.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>openOrder(task));});
-    orderCol.append(label);
+    if (taskCards.has(task.url)) {
+      const existing = taskCards.get(task.url);
+      $("tasks").append(existing.card);
+      nextCardMap.set(task.url, existing);
+    } else {
+      const card=document.createElement('details');card.className='orderCard';
+      const header=document.createElement('summary');header.className='orderHeader';header.title='Expand or collapse order details';
+      const toggle=document.createElement('span');toggle.className='orderToggle';toggle.textContent='▸';toggle.setAttribute('aria-hidden','true');
+      const orderCol=document.createElement('div');orderCol.className='orderCol';
+      const orderTitleRow=document.createElement('div');orderTitleRow.className='orderTitleRow';
+      const label=document.createElement('button');label.type='button';label.className='orderLink';label.textContent=task.orderNumber || task.name;label.title='Open Order Overview';
+      label.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>openOrder(task));});
+      orderTitleRow.append(label);
 
-    const metaParts = [];
-    if (task.state) metaParts.push(`State: ${task.state}`);
-    if (task.county) metaParts.push(task.county);
-    if (task.arrivalTime) metaParts.push(`Arrived: ${task.arrivalTime}`);
+      if (task.pageNumber) {
+        const pageBadge=document.createElement('span');
+        pageBadge.className='pageBadge';
+        pageBadge.textContent=`Page ${task.pageNumber}`;
+        orderTitleRow.append(pageBadge);
+      }
+      orderCol.append(orderTitleRow);
 
-    if (metaParts.length > 0) {
-      const meta = document.createElement('div');
-      meta.className = 'orderMeta';
-      meta.textContent = metaParts.join(' · ');
-      orderCol.append(meta);
+      const metaParts = [];
+      if (task.state) metaParts.push(`State: ${task.state}`);
+      if (task.county) metaParts.push(task.county);
+      if (task.arrivalTime) metaParts.push(`Arrived: ${task.arrivalTime}`);
+
+      if (metaParts.length > 0) {
+        const meta = document.createElement('div');
+        meta.className = 'orderMeta';
+        meta.textContent = metaParts.join(' · ');
+        orderCol.append(meta);
+      }
+
+      const badge=document.createElement('span');badge.setAttribute('role','status');
+      const start=document.createElement('button');start.type='button';start.className='primary startAnalysis';start.textContent='Start analysis';start.setAttribute('aria-label',`Start analysis for ${task.orderNumber}`);
+      start.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>processTask(task));});
+      header.append(toggle,orderCol,badge,start);
+      const content=document.createElement('div');content.className='orderContent';
+      const progress=document.createElement('p');progress.className='orderProgress';progress.setAttribute('aria-live','polite');progress.textContent='Choose Start analysis to review this order.';
+      const findings=document.createElement('div'),documents=document.createElement('div'),actions=document.createElement('div');documents.className='documentProgress';
+      content.append(progress,findings,documents,actions);card.append(header,content);$("tasks").append(card);
+      card.addEventListener('click',event=>{
+        // Native summaries and existing controls keep their own actions.
+        if(event.target.closest('button,a,input,textarea,select,summary'))return;
+        if(window.getSelection()?.toString())return;
+        card.open=!card.open;
+      });
+      const cardRecord = {card,badge,content,progress,findings,documents,actions,start};
+      nextCardMap.set(task.url, cardRecord);
+      taskCards.set(task.url, cardRecord);
+      setTaskState(task,'PENDING');
     }
-
-    const badge=document.createElement('span');badge.setAttribute('role','status');
-    const start=document.createElement('button');start.type='button';start.className='primary startAnalysis';start.textContent='Start analysis';start.setAttribute('aria-label',`Start analysis for ${task.orderNumber}`);
-    start.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();run(()=>processTask(task));});
-    header.append(toggle,orderCol,badge,start);
-    const content=document.createElement('div');content.className='orderContent';
-    const progress=document.createElement('p');progress.className='orderProgress';progress.setAttribute('aria-live','polite');progress.textContent='Choose Start analysis to review this order.';
-    const findings=document.createElement('div'),documents=document.createElement('div'),actions=document.createElement('div');documents.className='documentProgress';
-    content.append(progress,findings,documents,actions);card.append(header,content);$("tasks").append(card);
-    card.addEventListener('click',event=>{
-      // Native summaries and existing controls keep their own actions.
-      if(event.target.closest('button,a,input,textarea,select,summary'))return;
-      if(window.getSelection()?.toString())return;
-      card.open=!card.open;
-    });
-    taskCards.set(task.url,{card,badge,content,progress,findings,documents,actions,start});setTaskState(task,'PENDING');
+  }
+  taskCards.clear();
+  for (const [url, item] of nextCardMap.entries()) {
+    taskCards.set(url, item);
   }
   $("tasksSection").hidden=!discoveredTasks.length;
   $("orderCount").textContent=`${discoveredTasks.length} found`;
@@ -193,18 +216,68 @@ async function scan() {
   log('scan.start');
   const tab = await currentTab();
   sourceTabId = tab.id;
-  const data = await inject(tab.id, readOrderPage, [settings]);
-  if(data.scanDiagnostics){
-    log('scan.tables',{count:data.scanDiagnostics.queueTables});
-    log('scan.rows',{count:data.scanDiagnostics.searchFixRows,missing:data.scanDiagnostics.missingOverviewLinks});
+  const initialData = await inject(tab.id, readOrderPage, [settings]);
+  if(initialData.scanDiagnostics){
+    log('scan.tables',{count:initialData.scanDiagnostics.queueTables});
+    log('scan.rows',{count:initialData.scanDiagnostics.searchFixRows,missing:initialData.scanDiagnostics.missingOverviewLinks});
   }
-  discoveredTasks = [...new Map(data.tasks.map(task=>[task.url,task])).values()];
+
+  const allTasksMap = new Map();
+  for (const t of initialData.tasks || []) {
+    t.pageNumber = t.pageNumber || 1;
+    allTasksMap.set(t.url, t);
+  }
+
+  let totalSkipped = initialData.scanDiagnostics?.missingOverviewLinks || 0;
+
+  // Multi-page queue traversal if more than 1 page is present
+  if (initialData.pager && initialData.pager.totalPages > 1) {
+    const totalPages = initialData.pager.totalPages;
+    log('scan.paging.start', { totalPages, initialTasks: allTasksMap.size });
+
+    for (let page = 2; page <= totalPages; page++) {
+      status(`Scanning queue page ${page} of ${totalPages} (${allTasksMap.size} SearchFix orders found so far)…`);
+      try {
+        await inject(tab.id, navigateQueuePage, [page]);
+        let pageData = null;
+        for (let attempt = 0; attempt < 25; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const checkData = await inject(tab.id, readOrderPage, [settings]);
+          if (checkData.pager?.currentPage === page) {
+            pageData = checkData;
+            break;
+          }
+        }
+        if (pageData) {
+          for (const t of pageData.tasks || []) {
+            t.pageNumber = t.pageNumber || page;
+            allTasksMap.set(t.url, t);
+          }
+          if (pageData.scanDiagnostics?.missingOverviewLinks) {
+            totalSkipped += pageData.scanDiagnostics.missingOverviewLinks;
+          }
+          log('scan.page.complete', { page, foundOnPage: pageData.tasks.length, totalTasks: allTasksMap.size });
+        } else {
+          log('scan.page.timeout', { page });
+        }
+      } catch (err) {
+        log('scan.page.error', { page, message: err.message });
+      }
+    }
+
+    // Return to first page of the queue
+    try {
+      await inject(tab.id, navigateQueuePage, [1]);
+    } catch {}
+  }
+
+  discoveredTasks = [...allTasksMap.values()];
   renderTasks();
   log('scan.complete', {count:discoveredTasks.length});
   $("toggleApiKey").hidden = false;
-  const skipped=data.scanDiagnostics?.missingOverviewLinks || 0;
+  const skipped = totalSkipped;
   status(discoveredTasks.length ? `Found ${discoveredTasks.length} SearchFix orders. Choose Start analysis beside the order you want to review.${skipped?` ${skipped} additional rows have no readable Order Overview link.`:''}` : skipped ? `Found ${skipped} SearchFix rows, but their Order Overview links could not be read. Copy the activity log for troubleshooting.` : "No SearchFix orders found on this page. Open All Active and Available Tasks, load the desired rows, and scan again.");
-  return data;
+  return initialData;
 }
 async function navigate(url) {
   const tab = await currentTab();
@@ -226,6 +299,30 @@ $("scan").addEventListener("click", () => run(async () => {
   const data = await scan();
   if (data.tasks.length) return;
   if (data.queueLinks.length) await navigate(data.queueLinks[0].url);
+}));
+$("analyzeAll")?.addEventListener("click", () => run(async () => {
+  if(!apiKey){
+    $("apiKeySection").hidden=false;
+    $("toggleApiKey").setAttribute('aria-expanded','true');
+    $("apiKey").focus();
+    throw Error('Add your Gemini API key, then choose Analyze all orders.');
+  }
+  if(!discoveredTasks.length) throw Error('No SearchFix orders available to analyze. Scan the queue first.');
+
+  const pending = discoveredTasks.filter(t => {
+    const c = taskCards.get(t.url);
+    const st = c?.card?.dataset?.status;
+    return !st || st === 'PENDING' || st === 'PROCESSING';
+  });
+  const targetList = pending.length ? pending : discoveredTasks;
+
+  status(`Starting batch analysis for ${targetList.length} orders…`);
+  for(let i = 0; i < targetList.length; i++) {
+    const task = targetList[i];
+    status(`Analyzing order ${i + 1} of ${targetList.length}: ${task.orderNumber} (Page ${task.pageNumber || 1})…`);
+    await processTask(task);
+  }
+  status(`Batch analysis complete: finished reviewing ${targetList.length} orders.`);
 }));
 async function processTask(task) {
   if(!apiKey){$("apiKeySection").hidden=false;$("toggleApiKey").setAttribute('aria-expanded','true');$("apiKey").focus();throw Error('Add your Gemini API key, then choose Start analysis.');}

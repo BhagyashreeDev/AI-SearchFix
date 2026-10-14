@@ -242,3 +242,37 @@ test('chosen comment appears before downloads; failed document requests preserve
  assert.equal(events.at(-1),'document-request');assert.ok(result.documents.every(d=>d.status==='UNVERIFIED'));
  assert.equal(f.results.length,1);assert.deepEqual([...f.tabsMap.keys()],[99]);
 });
+
+test('TYPED_REPORT falls back to Typing Module text if DOCX download fails', async () => {
+ const f = fixture();
+ f.runner.inject = async (tabId, fn, args) => {
+   if (fn.name === 'readOrderPage') {
+     return { pageUrl: `${origin}/OrderOverview.aspx?PublicOrderId=FALLBACK`, orderNumber: 'FALLBACK', comments: [{ author: 'Client', date: '2026-09-25', time: '12:00', text: 'Typing error on deed' }], attachments: [] };
+   }
+   if (fn.name === 'openSupportingLink') {
+     if (args[0] === 'tasks') return { url: `${origin}/Tasks.aspx?PublicOrderId=FALLBACK` };
+     return { url: `${origin}/${args[0]}.aspx?PublicOrderId=FALLBACK` };
+   }
+   if (fn.name === 'readSupportingView') {
+     if (args[2] === 'attachments') return { pageUrl: `${origin}/attachments.aspx?PublicOrderId=FALLBACK`, attachments: [] };
+     if (args[2] === 'tasks') return { tasks: [], typingModuleUrl: `${origin}/Exam?id=FALLBACK&examTaskName=Typing%20Module%20Task&wfttid=944`, pageUrl: `${origin}/Tasks.aspx?PublicOrderId=FALLBACK` };
+     if (args[2] === 'exam') return { previewUrl: `${origin}/DocGen/FailedPreview`, docxName: 'FALLBACK_TypedReport.docx', text: 'Order Details: FALLBACK\nLender: MERS as nominee for Freedom Mortgage Corporation\nTax: Parcel 13-14-430-005', pageUrl: `${origin}/Exam?id=FALLBACK` };
+     return { pageUrl: `${origin}/overview.aspx` };
+   }
+   if (fn.name === 'readAttachment') {
+     throw new Error('The attachment response is not a PDF or Word document.');
+   }
+   throw new Error(`Unexpected injected function: ${fn.name}`);
+ };
+ let receivedOrderData = null;
+ f.runner.api = async (endpoint, body) => {
+   if (endpoint === 'analyze-comments') {
+     return { orderNumber: 'FALLBACK', analysisId: 'test-id', status: 'AWAITING_DOCUMENTS', issues: [{ requiredFiles: [{ fileType: 'TYPED_REPORT' }] }] };
+   }
+   receivedOrderData = JSON.parse(body.get('orderData'));
+   return { orderNumber: 'FALLBACK', status: 'ACCEPTED', overallDecision: 'ACCEPTED', issues: [] };
+ };
+ const [result] = await f.runner.run([task('FALLBACK')]);
+ assert.equal(result.status, 'ACCEPTED');
+ assert.match(receivedOrderData.typedReportText, /Freedom Mortgage Corporation/);
+});
